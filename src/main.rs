@@ -29,7 +29,8 @@ use itertools::Itertools;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::OneOf;
 use lsp_types::{
-    request::WorkspaceSymbolRequest, InitializeParams, Location, Position, Range,
+    request::WorkspaceSymbolRequest, request::WorkspaceFoldersRequest,
+    InitializeParams, Location, Position, Range,
     ServerCapabilities, SymbolInformation, SymbolKind, Url,
 };
 
@@ -46,12 +47,8 @@ fn main() -> Result<()> {
     })
     .unwrap();
 
-    // let path = Path::new("/Users/oleksandr.oksenenko/code/rust-ruby-ls/test_data/");
-    let path = Path::new("/Users/oleksandr.oksenenko/code/thredup-dev/apps/thredUP3/");
-    let indexer = Indexer::index_folder(path)?;
-
     let initialization_params = connection.initialize(server_capabilities)?;
-    main_loop(connection, initialization_params, indexer)?;
+    main_loop(connection, initialization_params)?;
     io_threads.join()?;
 
     eprintln!("shutting down the server");
@@ -59,10 +56,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn main_loop(connection: Connection, params: serde_json::Value, indexer: Indexer) -> Result<()> {
-    let _params: InitializeParams = serde_json::from_value(params).unwrap();
+fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
+    let params: InitializeParams = serde_json::from_value(params).unwrap();
 
     eprintln!("start main loop");
+    eprintln!("params: {:?}", params);
+
+    // TODO: fix unwraps
+    let path = params.root_uri.unwrap().to_file_path().unwrap();
+
+    let indexer = Indexer::index_folder(path.as_path())?;
 
     for msg in &connection.receiver {
         eprintln!("got msg: {msg:?}");
@@ -237,38 +240,6 @@ impl Indexer {
                 self.sources.push(path.to_path_buf());
             });
 
-        // sources.chunks(1).for_each(|chunk| {
-        //     pool.install(|| {
-        //         chunk.iter().for_each(|path| {
-        //             // eprintln!("Indexing source: {:?}", path);
-        //             Self::index_file(
-        //                 &mut self.parser,
-        //                 &self.class_query,
-        //                 &self.method_query,
-        //                 &self.singleton_method_query,
-        //                 &mut self.classes,
-        //                 path.as_path(),
-        //             )
-        //             .unwrap();
-
-        //             self.sources.push(path.clone());
-        //         })
-        //     })
-        // });
-        // sources.iter().for_each(|source| {
-        //     // eprintln!("Indexing source: {:?}", path);
-
-        //     Self::index_file(
-        //         &mut self.parser,
-        //         &self.class_query,
-        //         &self.method_query,
-        //         &self.singleton_method_query,
-        //         &mut self.classes,
-        //         source,
-        //     ).unwrap();
-
-        //     self.sources.push(source.to_path_buf());
-        // });
         Ok(())
     }
 
@@ -328,7 +299,7 @@ impl Indexer {
                     })
                     .collect::<Vec<SymbolInformation>>();
 
-                let mut symbols = Vec::new();
+                let mut symbols = Vec::with_capacity(methods_info.len() + 1);
                 symbols.push(class_info);
                 symbols.append(&mut methods_info);
                 symbols
