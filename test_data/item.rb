@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class Item < ActiveRecord::Base
+class A::B::Item < ActiveRecord::Base
   include ListingWindowAdjustmentMethods
   include PreprocessMethods
   include PhotoMethods

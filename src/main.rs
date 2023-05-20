@@ -5,6 +5,9 @@ use jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+#[macro_use]
+extern crate anyhow;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -135,9 +138,9 @@ struct Method {
 struct Class {
     name: String,
     scopes: Vec<String>,
-    superclass: String,
-    path: PathBuf,
-    location: Point,
+    superclass: Option<Box<Class>>,
+    path: Option<PathBuf>,
+    location: Option<Point>,
     methods: Vec<Method>,
     singleton_methods: Vec<Method>,
 }
@@ -172,11 +175,9 @@ impl Indexer {
         let language = tree_sitter_ruby::language();
         let class_query = Self::create_query(
             r#"(class
-            name: (constant) @class_name
-            superclass: (superclass (scope_resolution
-                                     scope: (constant) @superclass_scope
-                                     name: (constant) @superclass_name))?) "#,
-        )?;
+                name: [(constant) (scope_resolution)] @class_name
+                superclass: [(constant) (scope_resolution)]? @superclass_name)"#
+            )?;
         let method_query = Self::create_query(
             r#"(method
             name: (identifier) @method_name
@@ -238,12 +239,14 @@ impl Indexer {
             .classes
             .iter()
             .flat_map(|c| {
-                let file_path_str = c.path.to_str().unwrap();
+                let path = c.path.as_ref().unwrap();
+                let file_path_str = path.to_str().unwrap();
                 let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
                 let url_clone = url.clone();
 
-                let line: u32 = c.location.row.try_into().unwrap();
-                let character: u32 = c.location.column.try_into().unwrap();
+                let location = c.location.unwrap();
+                let line: u32 = location.row.try_into().unwrap();
+                let character: u32 = location.column.try_into().unwrap();
 
                 let class_name_len: u32 = c.name.len().try_into().unwrap();
 
@@ -252,7 +255,8 @@ impl Indexer {
                     end: Position::new(line, character + class_name_len),
                 };
 
-                let name = c.scopes.iter().join("::") + c.name.as_str();
+                let scopes = c.scopes.iter().join("::");
+                let name = if scopes.is_empty() { c.name.clone() } else { scopes + "::" + c.name.as_str() };
                 let class_info = SymbolInformation {
                     name,
                     kind: SymbolKind::CLASS,
@@ -307,57 +311,109 @@ impl Indexer {
         classes: &mut Vec<Class>,
         file: &Path,
     ) -> Result<()> {
-        let source = fs::read_to_string(file)?;
-        let parsed = parser.parse(&source, None).unwrap();
+        eprintln!("Indexing source: {:?}", file);
+        let source_str = fs::read_to_string(file)?;
+        let source = source_str.as_bytes();
+        let parsed = parser.parse(source, None).unwrap();
 
         let mut query_cursor = QueryCursor::new();
 
-        for query_match in query_cursor.matches(class_query, parsed.root_node(), source.as_bytes())
-        {
-            let class = query_match.captures.first().unwrap().node;
-
-            let class_name = class.utf8_text(source.as_bytes())?.to_owned();
-            let class_location = class.start_position();
-
-            let superclass_name = query_match
-                .captures
-                .iter()
-                .skip(1)
-                .map(|c| c.node)
-                .map(|n| n.utf8_text(source.as_bytes()))
-                .map(|r| r.unwrap())
-                .join("::");
-
-            let mut scopes: Vec<String> = Vec::new();
-            let mut parent_option = class.parent().and_then(|p| p.parent());
-            while let Some(parent) = parent_option {
-                if parent.kind() == "class" || parent.kind() == "module" {
-                    let parent_class_name = parent.child_by_field_name("name").unwrap();
-                    let scope = parent_class_name.utf8_text(source.as_bytes())?.to_owned();
-                    scopes.push(scope);
-                }
-                parent_option = parent.parent();
+        for query_match in query_cursor.matches(class_query, parsed.root_node(), source) {
+            if query_match.captures.is_empty() {
+                return Err(anyhow!("No matches found in {file:?}"));
             }
-            scopes.reverse();
 
-            let methods = Self::get_methods(
-                class.parent().unwrap(),
-                method_query,
-                source.as_bytes(),
-            )?;
+            let class_name_node = query_match.captures[0].node;
+            let class_scopes = Self::get_scopes(&class_name_node, source)?;
 
-            classes.push(Class {
-                name: class_name,
+            let class_location = class_name_node.start_position();
+
+            let methods = Self::get_methods(class_name_node.parent().unwrap(), method_query, source)?;
+
+            let superclass = if query_match.captures.len() > 1 {
+                let superclass_name_node = query_match.captures[1].node;
+                let superclass_scopes = Self::get_scopes(&superclass_name_node, source)?;
+
+                let mut iter = superclass_scopes.into_iter().rev();
+                let name = iter.next().unwrap();
+                let scopes = iter.rev().collect_vec();
+                eprintln!("Superclass scopes: {:?}", scopes);
+                Some(Box::new(Class {
+                    name,
+                    scopes,
+                    superclass: None,
+                    path: None,
+                    location: None,
+                    methods: Vec::new(),
+                    singleton_methods: Vec::new()
+                }))
+            } else {
+                None
+            };
+
+            eprintln!("All Class scopes: {:?}", class_scopes);
+            let mut iter = class_scopes.into_iter().rev();
+            let name = iter.next().unwrap();
+            let scopes = iter.rev().collect_vec();
+            eprintln!("Class scopes: {:?}", scopes);
+            let class = Class {
+                name,
                 scopes,
-                superclass: superclass_name,
-                path: file.to_owned(),
-                location: class_location,
+                superclass,
+                path: Some(file.to_owned()),
+                location: Some(class_location),
                 methods,
                 singleton_methods: Vec::new(),
-            })
+            };
+
+            classes.push(class);
         }
 
         Ok(())
+    }
+
+    fn get_scopes(main_node: &Node, source: &[u8]) -> Result<Vec<String>> {
+        let mut scopes = Vec::new();
+
+        if main_node.kind() == "scope_resolution" {
+            let mut node = *main_node;
+            while node.kind() == "scope_resolution" {
+                let name_node = node.child_by_field_name("name").unwrap();
+                let name = name_node.utf8_text(source)?.to_owned();
+                eprintln!("Pushing scope resolution name: {}", name);
+                scopes.push(name);
+
+                let child = node.child_by_field_name("scope");
+                match child {
+                    None => break,
+                    Some(n) => node = n
+                }
+            }
+            if node.kind() == "constant" {
+                let name = node.utf8_text(source)?.to_owned();
+                eprintln!("Pushing constant name: {}", name);
+                scopes.push(name);
+            }
+        }
+        if main_node.kind() == "constant" {
+            let name = main_node.utf8_text(source)?.to_owned();
+            eprintln!("Pushing main node constant name: {}", name);
+            scopes.push(name);
+        }
+
+        let class_node = main_node.parent();
+        let mut class_parent_node = class_node.and_then(|p| p.parent());
+        while let Some(parent) = class_parent_node {
+            if parent.kind() == "class" || parent.kind() == "module" {
+                let parent_class_name = parent.child_by_field_name("name").unwrap();
+                let scope = parent_class_name.utf8_text(source)?.to_owned();
+                scopes.push(scope);
+            }
+            class_parent_node = parent.parent();
+        }
+        scopes.reverse();
+
+        Ok(scopes)
     }
 
     fn get_methods(class_node: Node, method_query: &Query, source: &[u8]) -> Result<Vec<Method>> {
