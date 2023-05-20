@@ -63,7 +63,6 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     let params: InitializeParams = serde_json::from_value(params).unwrap();
 
     eprintln!("start main loop");
-    eprintln!("params: {:?}", params);
 
     // TODO: fix unwraps
     let path = params.root_uri.unwrap().to_file_path().unwrap();
@@ -146,6 +145,8 @@ struct Class {
 }
 
 struct Indexer {
+    ruby_version: Option<String>,
+    gemset: Option<String>,
     sources: Vec<PathBuf>,
     pub classes: Vec<Class>,
 
@@ -161,7 +162,22 @@ impl Indexer {
     pub fn index_folder(folder: &Path) -> Result<Indexer> {
         let start = Instant::now();
         eprintln!("Started indexing");
-        let mut indexer = Indexer::new()?;
+
+        let ruby_version_file = folder.join(".ruby-version");
+        let ruby_version = if ruby_version_file.exists() { 
+            Some(fs::read_to_string(ruby_version_file)?.trim().to_owned()) 
+        } else { 
+            None 
+        };
+
+        let gemset_file = folder.join(".ruby-gemset");
+        let gemset = if gemset_file.exists() { 
+            Some(fs::read_to_string(gemset_file)?.trim().to_owned()) 
+        } else { 
+            None 
+        };
+
+        let mut indexer = Indexer::new(ruby_version, gemset)?;
         indexer.recursively_index_folder(folder)?;
 
         indexer.convert_to_symbol_info()?;
@@ -171,7 +187,7 @@ impl Indexer {
         Ok(indexer)
     }
 
-    pub fn new() -> Result<Indexer> {
+    pub fn new(ruby_version: Option<String>, gemset: Option<String>) -> Result<Indexer> {
         let language = tree_sitter_ruby::language();
         let class_query = Self::create_query(
             r#"(class
@@ -195,6 +211,8 @@ impl Indexer {
         parser.set_language(language).unwrap();
 
         Ok(Indexer {
+            ruby_version,
+            gemset,
             sources: Vec::new(),
             classes: Vec::new(),
             symbols: Vec::new(),
@@ -255,8 +273,7 @@ impl Indexer {
                     end: Position::new(line, character + class_name_len),
                 };
 
-                let scopes = c.scopes.iter().join("::");
-                let name = if scopes.is_empty() { c.name.clone() } else { scopes + "::" + c.name.as_str() };
+                let name = c.name.clone();
                 let class_info = SymbolInformation {
                     name,
                     kind: SymbolKind::CLASS,
@@ -311,7 +328,6 @@ impl Indexer {
         classes: &mut Vec<Class>,
         file: &Path,
     ) -> Result<()> {
-        eprintln!("Indexing source: {:?}", file);
         let source_str = fs::read_to_string(file)?;
         let source = source_str.as_bytes();
         let parsed = parser.parse(source, None).unwrap();
@@ -337,7 +353,6 @@ impl Indexer {
                 let mut iter = superclass_scopes.into_iter().rev();
                 let name = iter.next().unwrap();
                 let scopes = iter.rev().collect_vec();
-                eprintln!("Superclass scopes: {:?}", scopes);
                 Some(Box::new(Class {
                     name,
                     scopes,
@@ -351,11 +366,9 @@ impl Indexer {
                 None
             };
 
-            eprintln!("All Class scopes: {:?}", class_scopes);
             let mut iter = class_scopes.into_iter().rev();
             let name = iter.next().unwrap();
             let scopes = iter.rev().collect_vec();
-            eprintln!("Class scopes: {:?}", scopes);
             let class = Class {
                 name,
                 scopes,
@@ -380,7 +393,6 @@ impl Indexer {
             while node.kind() == "scope_resolution" {
                 let name_node = node.child_by_field_name("name").unwrap();
                 let name = name_node.utf8_text(source)?.to_owned();
-                eprintln!("Pushing scope resolution name: {}", name);
                 scopes.push(name);
 
                 let child = node.child_by_field_name("scope");
@@ -391,13 +403,11 @@ impl Indexer {
             }
             if node.kind() == "constant" {
                 let name = node.utf8_text(source)?.to_owned();
-                eprintln!("Pushing constant name: {}", name);
                 scopes.push(name);
             }
         }
         if main_node.kind() == "constant" {
             let name = main_node.utf8_text(source)?.to_owned();
-            eprintln!("Pushing main node constant name: {}", name);
             scopes.push(name);
         }
 
