@@ -177,10 +177,6 @@ impl Indexer {
                                      scope: (constant) @superclass_scope
                                      name: (constant) @superclass_name))?) "#,
         )?;
-        // let method_query = Self::create_query(
-        //     r#"
-        //     (method)
-        //     "#)?;
         let method_query = Self::create_query(
             r#"(method
             name: (identifier) @method_name
@@ -214,17 +210,11 @@ impl Indexer {
     }
 
     pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<()> {
-        // let pool = rayon::ThreadPoolBuilder::new()
-        //     .num_threads(1)
-        //     .build()
-        //     .unwrap();
-
         WalkDir::new(folder)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|e| !e.file_type().is_dir())
             .filter(|e| "rb" == e.path().extension().and_then(OsStr::to_str).unwrap_or(""))
-            // .map(|e| e.path())
             .for_each(|entry| {
                 let path = entry.path();
 
