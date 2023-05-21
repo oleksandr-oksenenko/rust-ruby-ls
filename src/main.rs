@@ -12,6 +12,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -23,7 +24,7 @@ use log::{debug, error, info};
 
 use tree_sitter::*;
 
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use rayon::prelude::*;
 
@@ -32,9 +33,8 @@ use itertools::Itertools;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::OneOf;
 use lsp_types::{
-    request::WorkspaceSymbolRequest, request::WorkspaceFoldersRequest,
-    InitializeParams, Location, Position, Range,
-    ServerCapabilities, SymbolInformation, SymbolKind, Url,
+    request::WorkspaceFoldersRequest, request::WorkspaceSymbolRequest, InitializeParams, Location,
+    Position, Range, ServerCapabilities, SymbolInformation, SymbolKind, SymbolTag, Url,
 };
 
 fn main() -> Result<()> {
@@ -145,14 +145,15 @@ struct Class {
 }
 
 struct Indexer {
-    ruby_version: Option<String>,
-    gemset: Option<String>,
     sources: Vec<PathBuf>,
     pub classes: Vec<Class>,
 
     pub symbols: Vec<SymbolInformation>,
 
+    thread_pool: rayon::ThreadPool,
+
     parser: Parser,
+    language: Language,
     class_query: Query,
     method_query: Query,
     singleton_method_query: Query,
@@ -164,20 +165,30 @@ impl Indexer {
         eprintln!("Started indexing");
 
         let ruby_version_file = folder.join(".ruby-version");
-        let ruby_version = if ruby_version_file.exists() { 
-            Some(fs::read_to_string(ruby_version_file)?.trim().to_owned()) 
-        } else { 
-            None 
+        let ruby_version = if ruby_version_file.exists() {
+            Some(fs::read_to_string(ruby_version_file)?.trim().to_owned())
+        } else {
+            None
         };
 
         let gemset_file = folder.join(".ruby-gemset");
-        let gemset = if gemset_file.exists() { 
-            Some(fs::read_to_string(gemset_file)?.trim().to_owned()) 
-        } else { 
-            None 
+        let gemset = if gemset_file.exists() {
+            Some(fs::read_to_string(gemset_file)?.trim().to_owned())
+        } else {
+            None
         };
 
-        let mut indexer = Indexer::new(ruby_version, gemset)?;
+        let mut indexer = Indexer::new()?;
+
+        if let Some(dir) = Self::choose_stubs_dir(&ruby_version) {
+            eprintln!("Stubs dir: {:?}", dir);
+            indexer.recursively_index_folder(&dir)?;
+        }
+        if let Some(dir) = Self::choose_gems_dir(&ruby_version, &gemset) {
+            eprintln!("Gems dir: {:?}", dir);
+            indexer.recursively_index_folder(&dir)?;
+        }
+
         indexer.recursively_index_folder(folder)?;
 
         indexer.convert_to_symbol_info()?;
@@ -187,13 +198,18 @@ impl Indexer {
         Ok(indexer)
     }
 
-    pub fn new(ruby_version: Option<String>, gemset: Option<String>) -> Result<Indexer> {
+    pub fn new() -> Result<Indexer> {
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .unwrap();
+
         let language = tree_sitter_ruby::language();
         let class_query = Self::create_query(
             r#"(class
                 name: [(constant) (scope_resolution)] @class_name
-                superclass: [(constant) (scope_resolution)]? @superclass_name)"#
-            )?;
+                superclass: [(constant) (scope_resolution)]? @superclass_name)"#,
+        )?;
         let method_query = Self::create_query(
             r#"(method
             name: (identifier) @method_name
@@ -211,16 +227,46 @@ impl Indexer {
         parser.set_language(language).unwrap();
 
         Ok(Indexer {
-            ruby_version,
-            gemset,
             sources: Vec::new(),
             classes: Vec::new(),
             symbols: Vec::new(),
+            thread_pool,
             class_query,
             method_query,
             singleton_method_query,
             parser,
+            language
         })
+    }
+
+    fn choose_stubs_dir(ruby_version: &Option<String>) -> Option<PathBuf> {
+        let ruby_version = match ruby_version {
+            None => return None,
+            Some(version) => version,
+        };
+
+        let segments = ruby_version.split('.').collect_vec();
+        let major = segments[0];
+        let minor = segments[1];
+
+        let path = "/Users/oleksandr.oksenenko/code/rust-ruby-ls/stubs/rubystubs".to_owned()
+            + major
+            + minor;
+
+        Some(PathBuf::from(path))
+    }
+
+    fn choose_gems_dir(ruby_version: &Option<String>, gemset: &Option<String>) -> Option<PathBuf> {
+        let ruby_version = match ruby_version {
+            None => return None,
+            Some(version) => version,
+        };
+
+        let path = "/Users/oleksandr.oksenenko/.rvm/gems/ruby-".to_owned() + ruby_version;
+        match gemset {
+            None => Some(PathBuf::from(path)),
+            Some(gemset) => Some(PathBuf::from(path + "@" + gemset)),
+        }
     }
 
     fn create_query(q: &str) -> Result<Query> {
@@ -229,25 +275,30 @@ impl Indexer {
     }
 
     pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<()> {
-        WalkDir::new(folder)
+        let class_query = &self.class_query;
+        let method_query = &self.method_query;
+        let singleton_method_query = &self.singleton_method_query;
+
+        let mut classes: Vec<Class> = WalkDir::new(folder)
             .into_iter()
+            .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| !e.file_type().is_dir())
             .filter(|e| "rb" == e.path().extension().and_then(OsStr::to_str).unwrap_or(""))
-            .for_each(|entry| {
-                let path = entry.path();
-
+            .flat_map(|entry| {
                 Self::index_file(
-                    &mut self.parser,
-                    &self.class_query,
-                    &self.method_query,
-                    &self.singleton_method_query,
-                    &mut self.classes,
-                    path,
-                    ).unwrap();
+                    self.language,
+                    class_query,
+                    method_query,
+                    singleton_method_query,
+                    entry.path().to_path_buf(),
+                ).unwrap()
+            }).collect();
 
-                self.sources.push(path.to_path_buf());
-            });
+        eprintln!("Found {} classes", classes.len());
+
+        self.classes.append(&mut classes);
+        eprintln!("Total {} classes", self.classes.len());
 
         Ok(())
     }
@@ -255,7 +306,7 @@ impl Indexer {
     fn convert_to_symbol_info(&mut self) -> Result<()> {
         self.symbols = self
             .classes
-            .iter()
+            .par_iter()
             .flat_map(|c| {
                 let path = c.path.as_ref().unwrap();
                 let file_path_str = path.to_str().unwrap();
@@ -273,47 +324,20 @@ impl Indexer {
                     end: Position::new(line, character + class_name_len),
                 };
 
-                let name = c.name.clone();
+                let container_name = if c.scopes.is_empty() {
+                    None
+                } else {
+                    Some(c.scopes.iter().join("::"))
+                };
                 let class_info = SymbolInformation {
-                    name,
+                    name: c.name.clone(),
                     kind: SymbolKind::CLASS,
                     tags: None,
                     deprecated: None,
                     location: Location { uri: url, range },
-                    container_name: None,
+                    container_name,
                 };
-
-                let mut methods_info = c
-                    .methods
-                    .iter()
-                    .map(|m| {
-                        let line: u32 = m.location.row.try_into().unwrap();
-                        let character: u32 = m.location.column.try_into().unwrap();
-
-                        let name_len: u32 = m.name.len().try_into().unwrap();
-                        let range = Range {
-                            start: Position::new(line, character),
-                            end: Position::new(line, character + name_len),
-                        };
-
-                        SymbolInformation {
-                            name: m.name.clone(),
-                            kind: SymbolKind::METHOD,
-                            tags: None,
-                            deprecated: None,
-                            location: Location {
-                                uri: url_clone.clone(),
-                                range,
-                            },
-                            container_name: None,
-                        }
-                    })
-                    .collect::<Vec<SymbolInformation>>();
-
-                let mut symbols = Vec::with_capacity(methods_info.len() + 1);
-                symbols.push(class_info);
-                symbols.append(&mut methods_info);
-                symbols
+                vec![class_info]
             })
             .collect::<Vec<SymbolInformation>>();
 
@@ -321,19 +345,24 @@ impl Indexer {
     }
 
     pub fn index_file(
-        parser: &mut Parser,
+        // parser: Arc<Mutex<&mut Parser>>,
+        language: Language,
         class_query: &Query,
         method_query: &Query,
         singleton_method_query: &Query,
-        classes: &mut Vec<Class>,
-        file: &Path,
-    ) -> Result<()> {
-        let source_str = fs::read_to_string(file)?;
-        let source = source_str.as_bytes();
+        // classes: Arc<Mutex<&mut Vec<Class>>>,
+        file: PathBuf,
+    ) -> Result<Vec<Class>> {
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+
+        let source = &fs::read(&file)?[..];
+
         let parsed = parser.parse(source, None).unwrap();
 
         let mut query_cursor = QueryCursor::new();
 
+        let mut classes = Vec::new();
         for query_match in query_cursor.matches(class_query, parsed.root_node(), source) {
             if query_match.captures.is_empty() {
                 return Err(anyhow!("No matches found in {file:?}"));
@@ -344,7 +373,8 @@ impl Indexer {
 
             let class_location = class_name_node.start_position();
 
-            let methods = Self::get_methods(class_name_node.parent().unwrap(), method_query, source)?;
+            let methods =
+                Self::get_methods(class_name_node.parent().unwrap(), method_query, source)?;
 
             let superclass = if query_match.captures.len() > 1 {
                 let superclass_name_node = query_match.captures[1].node;
@@ -360,7 +390,7 @@ impl Indexer {
                     path: None,
                     location: None,
                     methods: Vec::new(),
-                    singleton_methods: Vec::new()
+                    singleton_methods: Vec::new(),
                 }))
             } else {
                 None
@@ -382,7 +412,7 @@ impl Indexer {
             classes.push(class);
         }
 
-        Ok(())
+        Ok(classes)
     }
 
     fn get_scopes(main_node: &Node, source: &[u8]) -> Result<Vec<String>> {
@@ -398,7 +428,7 @@ impl Indexer {
                 let child = node.child_by_field_name("scope");
                 match child {
                     None => break,
-                    Some(n) => node = n
+                    Some(n) => node = n,
                 }
             }
             if node.kind() == "constant" {

@@ -3,6 +3,10 @@ name = "rust-ruby-ls"
 version = "0.1.0"
 edition = "2021"
 
+[build]
+rustflags = ["-C", "target-cpu=native"]
+rustdocflags = ["-C", "target-cpu=native"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
@@ -30,3 +34,4 @@ lsp-server = "0.7"
 
 serde = "1"
 serde_json = "1"
+simd-json = "0.9"
