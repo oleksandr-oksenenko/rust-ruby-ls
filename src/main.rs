@@ -15,11 +15,14 @@ use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
     request::WorkspaceSymbolRequest, InitializeParams, OneOf, ServerCapabilities,
-    WorkspaceSymbolParams,
+    WorkspaceSymbolParams, SymbolInformation
 };
 
 mod indexer;
 use indexer::*;
+
+mod symbols_matcher;
+use symbols_matcher::SymbolsMatcher;
 
 fn main() -> Result<()> {
     eprintln!("start ruby language server");
@@ -103,7 +106,14 @@ fn handle_workspace_symbols_request(
     eprintln!("got workspace/symbol request #{id}: {params:?}");
 
     let start = Instant::now();
-    let symbol_information = &indexer.symbols;
+
+    let symbol_information: Vec<&SymbolInformation> = if !params.query.is_empty() {
+        let refs = &indexer.symbols.iter().collect::<Vec<&SymbolInformation>>()[..];
+        SymbolsMatcher::new()
+            .match_symbols(&params.query, refs)
+    } else {
+        indexer.symbols.iter().collect()
+    };
 
     let result = serde_json::to_value(symbol_information).unwrap();
     let resp = Response {
