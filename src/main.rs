@@ -108,9 +108,13 @@ fn handle_workspace_symbols_request(
     let start = Instant::now();
 
     let symbol_information: Vec<&SymbolInformation> = if !params.query.is_empty() {
-        let refs = &indexer.symbols.iter().collect::<Vec<&SymbolInformation>>()[..];
-        SymbolsMatcher::new()
-            .match_symbols(&params.query, refs)
+        let refs = indexer.symbols.iter();
+        let external_refs = indexer.external_symbols.iter();
+
+        let joined = refs.chain(external_refs);
+
+        SymbolsMatcher::new(indexer.root_path.as_path())
+            .match_symbols(&params.query, joined)
     } else {
         indexer.symbols.iter().collect()
     };

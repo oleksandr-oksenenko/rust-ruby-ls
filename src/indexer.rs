@@ -32,14 +32,13 @@ pub struct Class {
 }
 
 pub struct Indexer {
-    sources: Vec<PathBuf>,
+    pub root_path: PathBuf,
     pub classes: Vec<Class>,
 
+    pub external_classes: Vec<Class>,
+
     pub symbols: Vec<SymbolInformation>,
-
-    thread_pool: rayon::ThreadPool,
-
-    parser: Parser,
+    pub external_symbols: Vec<SymbolInformation>,
     language: Language,
     class_query: Query,
     method_query: Query,
@@ -65,18 +64,21 @@ impl Indexer {
             None
         };
 
-        let mut indexer = Indexer::new()?;
+        let mut indexer = Indexer::new(folder)?;
 
         if let Some(dir) = Self::choose_stubs_dir(&ruby_version) {
             eprintln!("Stubs dir: {:?}", dir);
-            indexer.recursively_index_folder(&dir)?;
+            let mut stub_classes = indexer.recursively_index_folder(&dir)?;
+            indexer.external_classes.append(&mut stub_classes);
         }
         if let Some(dir) = Self::choose_gems_dir(&ruby_version, &gemset) {
             eprintln!("Gems dir: {:?}", dir);
-            indexer.recursively_index_folder(&dir)?;
+            let mut gem_classes = indexer.recursively_index_folder(&dir)?;
+            indexer.external_classes.append(&mut gem_classes);
         }
 
-        indexer.recursively_index_folder(folder)?;
+        let mut classes = indexer.recursively_index_folder(folder)?;
+        indexer.external_classes.append(&mut classes);
 
         indexer.convert_to_symbol_info()?;
 
@@ -85,12 +87,7 @@ impl Indexer {
         Ok(indexer)
     }
 
-    pub fn new() -> Result<Indexer> {
-        let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(8)
-            .build()
-            .unwrap();
-
+    pub fn new(root_path: &Path) -> Result<Indexer> {
         let language = tree_sitter_ruby::language();
         let class_query = Self::create_query(
             r#"(class
@@ -114,14 +111,14 @@ impl Indexer {
         parser.set_language(language).unwrap();
 
         Ok(Indexer {
-            sources: Vec::new(),
+            root_path: root_path.to_path_buf(),
             classes: Vec::new(),
+            external_classes: Vec::new(),
             symbols: Vec::new(),
-            thread_pool,
+            external_symbols: Vec::new(),
             class_query,
             method_query,
             singleton_method_query,
-            parser,
             language,
         })
     }
@@ -161,12 +158,12 @@ impl Indexer {
         Ok(Query::new(language, q)?)
     }
 
-    pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<()> {
+    pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<Vec<Class>> {
         let class_query = &self.class_query;
         let method_query = &self.method_query;
         let singleton_method_query = &self.singleton_method_query;
 
-        let mut classes: Vec<Class> = WalkDir::new(folder)
+        let classes: Vec<Class> = WalkDir::new(folder)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
@@ -186,51 +183,61 @@ impl Indexer {
 
         eprintln!("Found {} classes", classes.len());
 
-        self.classes.append(&mut classes);
         eprintln!("Total {} classes", self.classes.len());
+
+        Ok(classes)
+    }
+
+    fn convert_to_symbol_info(&mut self) -> Result<()> {
+        self.symbols = self.classes
+            .par_iter()
+            .map(Self::convert_class_to_symbol)
+            .collect::<Vec<SymbolInformation>>();
+
+        self.external_symbols = self.external_classes
+            .par_iter()
+            .map(Self::convert_class_to_symbol)
+            .collect();
 
         Ok(())
     }
 
-    fn convert_to_symbol_info(&mut self) -> Result<()> {
-        self.symbols = self
-            .classes
-            .par_iter()
-            .flat_map(|c| {
-                let path = c.path.as_ref().unwrap();
-                let file_path_str = path.to_str().unwrap();
-                let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
-                let url_clone = url.clone();
+    fn convert_class_to_symbol(class: &Class) -> SymbolInformation {
+        let path = class.path.as_ref().unwrap();
+        let file_path_str = path.to_str().unwrap();
+        let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
 
-                let location = c.location.unwrap();
-                let line: u32 = location.row.try_into().unwrap();
-                let character: u32 = location.column.try_into().unwrap();
+        let location = class.location.unwrap();
+        let line: u32 = location.row.try_into().unwrap();
+        let character: u32 = location.column.try_into().unwrap();
 
-                let class_name_len: u32 = c.name.len().try_into().unwrap();
+        let class_name_len: u32 = class.name.len().try_into().unwrap();
 
-                let range = Range {
-                    start: Position::new(line, character),
-                    end: Position::new(line, character + class_name_len),
-                };
+        let range = Range {
+            start: Position::new(line, character),
+            end: Position::new(line, character + class_name_len),
+        };
 
-                let container_name = if c.scopes.is_empty() {
-                    None
-                } else {
-                    Some(c.scopes.iter().join("::"))
-                };
-                let class_info = SymbolInformation {
-                    name: c.name.clone(),
-                    kind: SymbolKind::CLASS,
-                    tags: None,
-                    deprecated: None,
-                    location: Location { uri: url, range },
-                    container_name,
-                };
-                vec![class_info]
-            })
-            .collect::<Vec<SymbolInformation>>();
+        let container_name = if class.scopes.is_empty() {
+            None
+        } else {
+            class.scopes.last().cloned()
+        };
+        let all_scopes = class.scopes.iter().join("::");
+        let name = if all_scopes.is_empty() {
+            class.name.clone()
+        } else {
+            class.scopes.iter().join("::") + "::" + &class.name
+        };
 
-        Ok(())
+        SymbolInformation {
+            name,
+            kind: SymbolKind::CLASS,
+            tags: None,
+            deprecated: None,
+            location: Location { uri: url, range },
+            container_name
+        }
     }
 
     pub fn index_file(
