@@ -37,10 +37,7 @@ pub struct Indexer<'a> {
     pub root_path: PathBuf,
     pub classes: Vec<Class>,
 
-    pub external_classes: Vec<Class>,
-
     pub symbols: Vec<SymbolInformation>,
-    pub external_symbols: Vec<SymbolInformation>,
 
     progress_reporter: ProgressReporter<'a>,
 
@@ -71,29 +68,15 @@ impl<'a> Indexer<'a> {
 
         let mut indexer = Indexer::new(folder, progress_reporter)?;
 
-        if let Some(dir) = Self::choose_stubs_dir(&ruby_version) {
-            eprintln!("Stubs dir: {:?}", dir);
-            let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", dir.to_str().unwrap()).as_str(), "", 0)?;
-            let mut stub_classes = indexer.recursively_index_folder(&dir)?;
-            indexer.external_classes.append(&mut stub_classes);
-            indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", dir.to_str().unwrap()).as_str())?;
-        }
-        if let Some(dir) = Self::choose_gems_dir(&ruby_version, &gemset) {
-            eprintln!("Gems dir: {:?}", dir);
-            let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", dir.to_str().unwrap()).as_str(), "", 0)?;
-            let mut gem_classes = indexer.recursively_index_folder(&dir)?;
-            indexer.external_classes.append(&mut gem_classes);
-            indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", dir.to_str().unwrap()).as_str())?;
+        let stub_dir = Self::choose_stubs_dir(&ruby_version);
+        let gems_dir = Self::choose_gems_dir(&ruby_version, &gemset);
+
+        for dir in [stub_dir, gems_dir, Some(folder.to_path_buf())].into_iter().flatten() {
+            let mut classes = indexer.recursively_index_folder(dir.as_path())?;
+            indexer.classes.append(&mut classes);
         }
 
-        let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", folder.to_str().unwrap()).as_str(), "", 0)?;
-        let mut classes = indexer.recursively_index_folder(folder)?;
-        indexer.external_classes.append(&mut classes);
-        indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", folder.to_str().unwrap()).as_str())?;
-
-        let token = indexer.progress_reporter.send_progress_begin("Converting to symbols", "", 0)?;
         indexer.convert_to_symbol_info()?;
-        indexer.progress_reporter.send_progress_end(token, "Done")?;
 
         eprintln!("Indexing done in {:?}", start.elapsed());
 
@@ -126,9 +109,7 @@ impl<'a> Indexer<'a> {
         Ok(Indexer {
             root_path: root_path.to_path_buf(),
             classes: Vec::new(),
-            external_classes: Vec::new(),
             symbols: Vec::new(),
-            external_symbols: Vec::new(),
             progress_reporter,
             class_query,
             method_query,
@@ -173,6 +154,8 @@ impl<'a> Indexer<'a> {
     }
 
     pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<Vec<Class>> {
+        let progress_token = self.progress_reporter.send_progress_begin(format!("Indexing {:?}", folder), "", 0)?;
+
         let class_query = &self.class_query;
         let method_query = &self.method_query;
         let singleton_method_query = &self.singleton_method_query;
@@ -195,23 +178,20 @@ impl<'a> Indexer<'a> {
             })
             .collect();
 
-        eprintln!("Found {} classes", classes.len());
-
-        eprintln!("Total {} classes", self.classes.len());
+        self.progress_reporter.send_progress_end(progress_token, format!("Indexing of {folder:?}"))?;
 
         Ok(classes)
     }
 
     fn convert_to_symbol_info(&mut self) -> Result<()> {
+        let progress_token = self.progress_reporter.send_progress_begin("Converting to symbols", "", 0)?;
+
         self.symbols = self.classes
             .par_iter()
             .map(Self::convert_class_to_symbol)
             .collect::<Vec<SymbolInformation>>();
 
-        self.external_symbols = self.external_classes
-            .par_iter()
-            .map(Self::convert_class_to_symbol)
-            .collect();
+        self.progress_reporter.send_progress_end(progress_token, "Converting to sybmols")?;
 
         Ok(())
     }

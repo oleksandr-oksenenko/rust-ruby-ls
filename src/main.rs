@@ -14,7 +14,7 @@ use anyhow::Result;
 
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
-    request::WorkspaceSymbolRequest, notification::Progress, ProgressParams,
+    request::WorkspaceSymbolRequest,
     InitializeParams, OneOf, ServerCapabilities, WorkspaceSymbolParams, SymbolInformation
 };
 
@@ -114,12 +114,9 @@ fn handle_workspace_symbols_request(
 
     let symbol_information: Vec<&SymbolInformation> = if !params.query.is_empty() {
         let refs = indexer.symbols.iter();
-        let external_refs = indexer.external_symbols.iter();
-
-        let joined = refs.chain(external_refs);
 
         SymbolsMatcher::new(indexer.root_path.as_path())
-            .match_symbols(&params.query, joined)
+            .match_symbols(&params.query, refs)
     } else {
         indexer.symbols.iter().collect()
     };

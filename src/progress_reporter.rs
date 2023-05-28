@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::Result;
 
 use crossbeam_channel::Sender;
@@ -18,16 +20,29 @@ impl<'a> ProgressReporter<'a> {
         }
     }
 
+    pub fn track<T, F: FnOnce() -> Result<T>>(&mut self, title: impl AsRef<str>, f: F) -> Result<T> {
+        let token = self.send_progress_begin(format!("Starting {}", title.as_ref()), "", 0)?;
+        let start = Instant::now();
+
+        let result = f()?;
+
+        let duration = start.elapsed();
+
+        self.send_progress_end(token, format!("{} finished in {:?}", title.as_ref(), duration))?;
+
+        Ok(result)
+    }
+
     pub fn send_progress_begin(
         &mut self,
-        title: &str,
-        message: &str,
+        title: impl AsRef<str>,
+        message: impl AsRef<str>,
         percentage: u32,
     ) -> Result<i32> {
         let work_done_progress_begin = lsp_types::WorkDoneProgressBegin {
-            title: title.to_string(),
+            title: title.as_ref().to_string(),
             cancellable: None,
-            message: Some(message.to_string()),
+            message: Some(message.as_ref().to_string()),
             percentage: Some(percentage),
         };
         let work_done_progress = WorkDoneProgress::Begin(work_done_progress_begin);
@@ -38,10 +53,10 @@ impl<'a> ProgressReporter<'a> {
         Ok(self.token_counter)
     }
 
-    pub fn send_progress_report(&mut self, message: &str, percentage: u32) -> Result<()> {
+    pub fn send_progress_report(&mut self, message: impl AsRef<str>, percentage: u32) -> Result<()> {
         let work_done_progress_report = lsp_types::WorkDoneProgressReport {
             cancellable: None,
-            message: Some(message.to_owned()),
+            message: Some(message.as_ref().to_string()),
             percentage: Some(percentage),
         };
         let work_done_progress = lsp_types::WorkDoneProgress::Report(work_done_progress_report);
@@ -52,9 +67,9 @@ impl<'a> ProgressReporter<'a> {
         Ok(())
     }
 
-    pub fn send_progress_end(&mut self, token: i32, message: &str) -> Result<()> {
+    pub fn send_progress_end(&mut self, token: i32, message: impl AsRef<str>) -> Result<()> {
         let work_done_progress_end = lsp_types::WorkDoneProgressEnd {
-            message: Some(message.to_string()),
+            message: Some(message.as_ref().to_string()),
         };
         let work_done_progress = lsp_types::WorkDoneProgress::End(work_done_progress_end);
 
