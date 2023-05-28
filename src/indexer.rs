@@ -15,6 +15,8 @@ use tree_sitter::*;
 
 use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
 
+use crate::progress_reporter::ProgressReporter;
+
 pub struct Method {
     name: String,
     params_count: u8,
@@ -31,7 +33,7 @@ pub struct Class {
     singleton_methods: Vec<Method>,
 }
 
-pub struct Indexer {
+pub struct Indexer<'a> {
     pub root_path: PathBuf,
     pub classes: Vec<Class>,
 
@@ -39,14 +41,17 @@ pub struct Indexer {
 
     pub symbols: Vec<SymbolInformation>,
     pub external_symbols: Vec<SymbolInformation>,
+
+    progress_reporter: ProgressReporter<'a>,
+
     language: Language,
     class_query: Query,
     method_query: Query,
     singleton_method_query: Query,
 }
 
-impl Indexer {
-    pub fn index_folder(folder: &Path) -> Result<Indexer> {
+impl<'a> Indexer<'a> {
+    pub fn index_folder(folder: &Path, progress_reporter: ProgressReporter<'a>) -> Result<Indexer<'a>> {
         let start = Instant::now();
         eprintln!("Started indexing");
 
@@ -64,30 +69,38 @@ impl Indexer {
             None
         };
 
-        let mut indexer = Indexer::new(folder)?;
+        let mut indexer = Indexer::new(folder, progress_reporter)?;
 
         if let Some(dir) = Self::choose_stubs_dir(&ruby_version) {
             eprintln!("Stubs dir: {:?}", dir);
+            let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", dir.to_str().unwrap()).as_str(), "", 0)?;
             let mut stub_classes = indexer.recursively_index_folder(&dir)?;
             indexer.external_classes.append(&mut stub_classes);
+            indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", dir.to_str().unwrap()).as_str())?;
         }
         if let Some(dir) = Self::choose_gems_dir(&ruby_version, &gemset) {
             eprintln!("Gems dir: {:?}", dir);
+            let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", dir.to_str().unwrap()).as_str(), "", 0)?;
             let mut gem_classes = indexer.recursively_index_folder(&dir)?;
             indexer.external_classes.append(&mut gem_classes);
+            indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", dir.to_str().unwrap()).as_str())?;
         }
 
+        let token = indexer.progress_reporter.send_progress_begin(format!("Starting indexing {}", folder.to_str().unwrap()).as_str(), "", 0)?;
         let mut classes = indexer.recursively_index_folder(folder)?;
         indexer.external_classes.append(&mut classes);
+        indexer.progress_reporter.send_progress_end(token, format!("Indexing {} done", folder.to_str().unwrap()).as_str())?;
 
+        let token = indexer.progress_reporter.send_progress_begin("Converting to symbols", "", 0)?;
         indexer.convert_to_symbol_info()?;
+        indexer.progress_reporter.send_progress_end(token, "Done")?;
 
         eprintln!("Indexing done in {:?}", start.elapsed());
 
         Ok(indexer)
     }
 
-    pub fn new(root_path: &Path) -> Result<Indexer> {
+    pub fn new(root_path: &Path, progress_reporter: ProgressReporter<'a>) -> Result<Indexer<'a>> {
         let language = tree_sitter_ruby::language();
         let class_query = Self::create_query(
             r#"(class
@@ -116,6 +129,7 @@ impl Indexer {
             external_classes: Vec::new(),
             symbols: Vec::new(),
             external_symbols: Vec::new(),
+            progress_reporter,
             class_query,
             method_query,
             singleton_method_query,

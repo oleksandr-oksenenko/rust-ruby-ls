@@ -14,8 +14,8 @@ use anyhow::Result;
 
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
-    request::WorkspaceSymbolRequest, InitializeParams, OneOf, ServerCapabilities,
-    WorkspaceSymbolParams, SymbolInformation
+    request::WorkspaceSymbolRequest, notification::Progress, ProgressParams,
+    InitializeParams, OneOf, ServerCapabilities, WorkspaceSymbolParams, SymbolInformation
 };
 
 mod indexer;
@@ -23,6 +23,9 @@ use indexer::*;
 
 mod symbols_matcher;
 use symbols_matcher::SymbolsMatcher;
+
+mod progress_reporter;
+use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
     eprintln!("start ruby language server");
@@ -52,7 +55,8 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     // TODO: fix unwraps
     let path = params.root_uri.unwrap().to_file_path().unwrap();
 
-    let indexer = Indexer::index_folder(path.as_path())?;
+    let progess_reporter = ProgressReporter::new(&connection.sender);
+    let indexer = Indexer::index_folder(path.as_path(), progess_reporter)?;
 
     for msg in &connection.receiver {
         eprintln!("got msg: {msg:?}");
@@ -96,6 +100,7 @@ where
 {
     req.extract(R::METHOD)
 }
+
 
 fn handle_workspace_symbols_request(
     indexer: &Indexer,
