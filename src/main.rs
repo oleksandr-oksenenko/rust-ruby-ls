@@ -15,20 +15,26 @@ use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
     request::WorkspaceSymbolRequest,
-    InitializeParams, OneOf, ServerCapabilities, WorkspaceSymbolParams, SymbolInformation
+    InitializeParams, OneOf, ServerCapabilities, WorkspaceSymbolParams, SymbolInformation, Url, Range, Position, SymbolKind, Location
 };
 
-mod indexer;
-use indexer::*;
+mod indexer_v2;
+use indexer_v2::*;
 
 mod symbols_matcher;
-use symbols_matcher::SymbolsMatcher;
 
 mod progress_reporter;
 use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
-    eprintln!("start ruby language server");
+    let file = log4rs::append::file::FileAppender::builder()
+        .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new("{d} - {m}{n}")))
+        .build("/Users/oleksandr.oksenenko/code/rust-ruby-ls/lsp.log").unwrap();
+    let config = log4rs::Config::builder()
+        .appender(log4rs::config::Appender::builder().build("file", Box::new(file)))
+        .build(log4rs::config::Root::builder().appender("file").build(log::LevelFilter::Info)).unwrap();
+    log4rs::init_config(config).unwrap();
+
 
     let (connection, io_threads) = Connection::stdio();
 
@@ -56,7 +62,8 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     let path = params.root_uri.unwrap().to_file_path().unwrap();
 
     let progess_reporter = ProgressReporter::new(&connection.sender);
-    let indexer = Indexer::index_folder(path.as_path(), progess_reporter)?;
+    let mut indexer = IndexerV2::new(path.as_path(), progess_reporter);
+    indexer.index()?;
 
     for msg in &connection.receiver {
         eprintln!("got msg: {msg:?}");
@@ -103,7 +110,7 @@ where
 
 
 fn handle_workspace_symbols_request(
-    indexer: &Indexer,
+    indexer_v2: &IndexerV2,
     id: RequestId,
     params: WorkspaceSymbolParams,
     connection: &Connection,
@@ -112,16 +119,12 @@ fn handle_workspace_symbols_request(
 
     let start = Instant::now();
 
-    let symbol_information: Vec<&SymbolInformation> = if !params.query.is_empty() {
-        let refs = indexer.symbols.iter();
+    let symbols: Vec<SymbolInformation> = indexer_v2.fuzzy_find_symbol(&params.query)
+        .iter()
+        .map(|s| { convert_to_lsp_sym_info(s) })
+        .collect();
 
-        SymbolsMatcher::new(indexer.root_path.as_path())
-            .match_symbols(&params.query, refs)
-    } else {
-        indexer.symbols.iter().collect()
-    };
-
-    let result = serde_json::to_value(symbol_information).unwrap();
+    let result = serde_json::to_value(symbols).unwrap();
     let resp = Response {
         id,
         result: Some(result),
@@ -135,3 +138,40 @@ fn handle_workspace_symbols_request(
 
     Ok(())
 }
+
+fn convert_to_lsp_sym_info(rsymbol: &RSymbol) -> SymbolInformation {
+    let path = rsymbol.file();
+    let file_path_str = path.to_str().unwrap();
+    let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
+
+    let location = rsymbol.location();
+    let line: u32 = location.row.try_into().unwrap();
+    let character: u32 = location.column.try_into().unwrap();
+
+    let name = rsymbol.name();
+    let name_len: u32 = name.len().try_into().unwrap();
+
+    let range = Range {
+        start: Position::new(line, character),
+        end: Position::new(line, character + name_len),
+    };
+
+    let kind = match rsymbol {
+        RSymbol::Class(_) => SymbolKind::CLASS,
+        RSymbol::Module(_) => SymbolKind::MODULE,
+        RSymbol::Method(_) => SymbolKind::METHOD,
+        RSymbol::SingletonMethod(_) => SymbolKind::METHOD,
+        RSymbol::Constant(_) => SymbolKind::CONSTANT,
+        _ => SymbolKind::NULL
+    };
+
+    SymbolInformation {
+        name: name.to_string(),
+        kind,
+        tags: None,
+        deprecated: None,
+        location: Location { uri: url, range },
+        container_name: None
+    }
+}
+
