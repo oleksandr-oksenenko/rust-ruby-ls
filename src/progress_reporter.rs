@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{time::Instant, cell::Cell};
 
 use anyhow::Result;
 
@@ -9,18 +9,18 @@ use lsp_types::{ProgressParams, WorkDoneProgress};
 
 pub struct ProgressReporter<'a> {
     sender: &'a Sender<Message>,
-    token_counter: i32,
+    token_counter: Cell<i32>,
 }
 
 impl<'a> ProgressReporter<'a> {
     pub fn new(sender: &Sender<Message>) -> ProgressReporter {
         ProgressReporter {
             sender,
-            token_counter: 0
+            token_counter: Cell::new(0)
         }
     }
 
-    pub fn track<T, F: FnOnce() -> Result<T>>(&mut self, title: impl AsRef<str>, f: F) -> Result<T> {
+    pub fn track<T, F: FnOnce() -> Result<T>>(&self, title: impl AsRef<str>, f: F) -> Result<T> {
         let token = self.send_progress_begin(format!("Starting {}", title.as_ref()), "", 0)?;
         let start = Instant::now();
 
@@ -34,7 +34,7 @@ impl<'a> ProgressReporter<'a> {
     }
 
     pub fn send_progress_begin(
-        &mut self,
+        &self,
         title: impl AsRef<str>,
         message: impl AsRef<str>,
         percentage: u32,
@@ -47,13 +47,14 @@ impl<'a> ProgressReporter<'a> {
         };
         let work_done_progress = WorkDoneProgress::Begin(work_done_progress_begin);
 
-        self.token_counter += 1;
-        self.send_progress(work_done_progress, self.token_counter)?;
+        let token = self.token_counter.get() + 1;
+        self.token_counter.set(token);
+        self.send_progress(work_done_progress, token)?;
 
-        Ok(self.token_counter)
+        Ok(token)
     }
 
-    pub fn send_progress_report(&mut self, message: impl AsRef<str>, percentage: u32) -> Result<()> {
+    pub fn send_progress_report(&self, message: impl AsRef<str>, percentage: u32) -> Result<()> {
         let work_done_progress_report = lsp_types::WorkDoneProgressReport {
             cancellable: None,
             message: Some(message.as_ref().to_string()),
@@ -61,13 +62,14 @@ impl<'a> ProgressReporter<'a> {
         };
         let work_done_progress = lsp_types::WorkDoneProgress::Report(work_done_progress_report);
 
-        self.token_counter += 1;
-        self.send_progress(work_done_progress, self.token_counter)?;
+        let token = self.token_counter.get() + 1;
+        self.token_counter.set(token);
+        self.send_progress(work_done_progress, token)?;
 
         Ok(())
     }
 
-    pub fn send_progress_end(&mut self, token: i32, message: impl AsRef<str>) -> Result<()> {
+    pub fn send_progress_end(&self, token: i32, message: impl AsRef<str>) -> Result<()> {
         let work_done_progress_end = lsp_types::WorkDoneProgressEnd {
             message: Some(message.as_ref().to_string()),
         };
@@ -78,7 +80,7 @@ impl<'a> ProgressReporter<'a> {
         Ok(())
     }
 
-    fn send_progress(&mut self, work_done_progress: WorkDoneProgress, token: i32) -> Result<()> {
+    fn send_progress(&self, work_done_progress: WorkDoneProgress, token: i32) -> Result<()> {
         let value = lsp_types::ProgressParamsValue::WorkDone(work_done_progress);
 
         let token = lsp_types::NumberOrString::Number(token);
