@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use log::info;
 use lsp_types::SymbolInformation;
@@ -23,8 +24,8 @@ impl<'a> SymbolsMatcher<'a> {
         }
     }
 
-    pub fn match_rsymbols(&self, query: &str, symbols: &[Rc<RSymbol>]) -> Vec<Rc<RSymbol>> {
-        let mut scores: Vec<(Rc<RSymbol>, [i32;5])> = symbols.iter()
+    pub fn match_rsymbols(&self, query: &str, symbols: &[Arc<RSymbol>]) -> Vec<Arc<RSymbol>> {
+        let mut scores: Vec<(Arc<RSymbol>, [i32;5])> = symbols.iter()
             .filter_map(|s| {
                 let name = s.name();
 

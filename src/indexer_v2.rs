@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -73,7 +74,7 @@ pub struct RClass {
     pub location: Point,
     pub scopes: Vec<String>,
     pub superclass_scopes: Vec<String>,
-    pub parent: Option<Rc<RSymbol>>,
+    pub parent: Option<Arc<RSymbol>>,
 }
 
 pub struct RMethod {
@@ -81,7 +82,7 @@ pub struct RMethod {
     pub name: String,
     pub location: Point,
     parameters: Vec<RMethodParam>,
-    parent: Option<Rc<RSymbol>>,
+    parent: Option<Arc<RSymbol>>,
 }
 
 pub enum RMethodParam {
@@ -94,21 +95,21 @@ pub struct RConstant {
     pub file: PathBuf,
     pub name: String,
     pub location: Point,
-    parent: Option<Rc<RSymbol>>,
+    parent: Option<Arc<RSymbol>>,
 }
 
 pub struct RMethodCall {
     pub file: PathBuf,
     pub name: String,
     pub location: Point,
-    parent: Option<Rc<RSymbol>>,
+    parent: Option<Arc<RSymbol>>,
 }
 
 pub struct RVariable {
     pub file: PathBuf,
     pub name: String,
     pub location: Point,
-    parent: Option<Rc<RSymbol>>,
+    parent: Option<Arc<RSymbol>>,
 }
 
 struct IndexingContext {
@@ -139,7 +140,7 @@ pub struct IndexerV2<'a> {
     root_dir: PathBuf,
     progress_reporter: ProgressReporter<'a>,
     ruby_env_provider: RubyEnvProvider,
-    symbols: Vec<Rc<RSymbol>>,
+    symbols: Vec<Arc<RSymbol>>,
 }
 
 impl<'a> IndexerV2<'a> {
@@ -153,7 +154,7 @@ impl<'a> IndexerV2<'a> {
         }
     }
 
-    pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Rc<RSymbol>> {
+    pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Arc<RSymbol>> {
         let start = Instant::now();
         let result = if query.is_empty() {
             // optimization to not overload telescope on request without a query
@@ -177,7 +178,7 @@ impl<'a> IndexerV2<'a> {
             .flatten()
             .flat_map(|d| self.index_dir(d))
             .flatten()
-            .collect::<Vec<Rc<RSymbol>>>();
+            .collect::<Vec<Arc<RSymbol>>>();
 
         self.symbols = symbols;
 
@@ -190,13 +191,14 @@ impl<'a> IndexerV2<'a> {
         Ok(())
     }
 
-    fn index_dir(&self, dir: &Path) -> Result<Vec<Rc<RSymbol>>> {
+    fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {
         let progress_token =
             self.progress_reporter
                 .send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
 
-        let classes: Vec<Rc<RSymbol>> = WalkDir::new(dir)
+        let classes: Vec<Arc<RSymbol>> = WalkDir::new(dir)
             .into_iter()
+            .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| !e.file_type().is_dir())
             .filter(|e| "rb" == e.path().extension().and_then(OsStr::to_str).unwrap_or(""))
@@ -209,10 +211,10 @@ impl<'a> IndexerV2<'a> {
         Ok(classes)
     }
 
-    fn index_file_cursor(path: PathBuf) -> Result<Vec<Rc<RSymbol>>> {
+    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbol>>> {
         let ctx = IndexingContext::new(path.as_path())?;
 
-        let mut result: Vec<Rc<RSymbol>> = Vec::new();
+        let mut result: Vec<Arc<RSymbol>> = Vec::new();
         let mut cursor = ctx.tree.walk();
         loop {
             let node = cursor.node();
@@ -237,23 +239,23 @@ impl<'a> IndexerV2<'a> {
         file: &Path,
         source: &[u8],
         node: Node,
-        parent: Option<Rc<RSymbol>>,
-    ) -> Vec<Rc<RSymbol>> {
+        parent: Option<Arc<RSymbol>>,
+    ) -> Vec<Arc<RSymbol>> {
         match node.kind() {
             "class" | "module" => {
                 Self::parse_class(file, source, node, parent)
             }
 
             "method" => {
-                vec![Rc::new(Self::parse_method(file, source, node, parent))]
+                vec![Arc::new(Self::parse_method(file, source, node, parent))]
             }
 
             "singleton_method" => {
-                vec![Rc::new(Self::parse_singleton_method(file, source, node, parent))]
+                vec![Arc::new(Self::parse_singleton_method(file, source, node, parent))]
             }
 
             "constant" => {
-                vec![Rc::new(Self::parse_constant(file, source, node, parent))]
+                vec![Arc::new(Self::parse_constant(file, source, node, parent))]
             }
 
             "program" => {
@@ -277,8 +279,8 @@ impl<'a> IndexerV2<'a> {
         file: &Path,
         source: &[u8],
         node: Node,
-        parent: Option<Rc<RSymbol>>,
-    ) -> Vec<Rc<RSymbol>> {
+        parent: Option<Arc<RSymbol>>,
+    ) -> Vec<Arc<RSymbol>> {
         assert!(node.kind() == "class" || node.kind() == "module");
 
         let name_node = node.child_by_field_name("name").unwrap();
@@ -299,12 +301,12 @@ impl<'a> IndexerV2<'a> {
         };
 
         let parent_symbol = if node.kind() == "class" {
-            Rc::new(RSymbol::Class(rclass))
+            Arc::new(RSymbol::Class(rclass))
         } else {
-            Rc::new(RSymbol::Module(rclass))
+            Arc::new(RSymbol::Module(rclass))
         };
 
-        let mut result: Vec<Rc<RSymbol>> = Vec::new();
+        let mut result: Vec<Arc<RSymbol>> = Vec::new();
         if let Some(body_node) = node.child_by_field_name("body") {
             let mut cursor = body_node.walk();
             cursor.goto_first_child();
@@ -328,7 +330,7 @@ impl<'a> IndexerV2<'a> {
         file: &Path,
         source: &[u8],
         node: Node,
-        parent: Option<Rc<RSymbol>>,
+        parent: Option<Arc<RSymbol>>,
     ) -> RSymbol {
         assert!(node.kind() == "method" || node.kind() == "singleton_method");
 
@@ -376,7 +378,7 @@ impl<'a> IndexerV2<'a> {
         file: &Path,
         source: &[u8],
         node: Node,
-        parent: Option<Rc<RSymbol>>,
+        parent: Option<Arc<RSymbol>>,
     ) -> RSymbol {
         match Self::parse_method(file, source, node, parent) {
             RSymbol::Method(method) => RSymbol::SingletonMethod(method),
@@ -388,7 +390,7 @@ impl<'a> IndexerV2<'a> {
         file: &Path,
         source: &[u8],
         node: Node,
-        parent: Option<Rc<RSymbol>>,
+        parent: Option<Arc<RSymbol>>,
     ) -> RSymbol {
         assert_eq!(node.kind(), "assignment");
 
