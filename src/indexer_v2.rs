@@ -113,10 +113,8 @@ pub struct RVariable {
 }
 
 struct IndexingContext {
-    parser: Parser,
     source: Vec<u8>,
     tree: Tree,
-    query_cursor: QueryCursor,
 }
 
 impl IndexingContext {
@@ -128,10 +126,8 @@ impl IndexingContext {
         let parsed = parser.parse(&source[..], None).unwrap();
 
         Ok(IndexingContext {
-            parser,
             source,
             tree: parsed,
-            query_cursor: QueryCursor::new(),
         })
     }
 }
@@ -141,6 +137,7 @@ pub struct IndexerV2<'a> {
     progress_reporter: ProgressReporter<'a>,
     ruby_env_provider: RubyEnvProvider,
     symbols: Vec<Arc<RSymbol>>,
+    file_index: HashMap<PathBuf, Vec<Arc<RSymbol>>>
 }
 
 impl<'a> IndexerV2<'a> {
@@ -151,6 +148,7 @@ impl<'a> IndexerV2<'a> {
             root_dir,
             progress_reporter,
             symbols: Vec::new(),
+            file_index: HashMap::new()
         }
     }
 
@@ -448,61 +446,6 @@ impl<'a> IndexerV2<'a> {
         scopes.reverse();
 
         scopes
-    }
-
-    fn file_query() -> Result<Query> {
-        Self::create_query(
-            r#"[
-            (class
-             name: [(constant) (scope_resolution)] @class_name
-             superclass: [(constant) (scope_resolution)]? @superclass_name
-             body: (body_statement
-                    [
-                    (call method: (identifier) @method_call arguments: (argument_list) @method_call_args)
-                    (assignment
-                     left: (constant) @constant_name
-                     right: (_))
-                    (method
-                     name: (identifier) @method_name
-                     parameters: (method_parameters (identifier) @method_parameters)?)
-                    (singleton_method
-                     name: (identifier) @singleton_method_name
-                     parameters: (method_parameters (identifier) @method_parameters)?)
-                    ]))
-            (method name: (identifier) @global_method_name parameters: (method_parameters (identifier) @global_method_parameters)?)
-            (assignment left: (constant) @global_constant_name (_))
-            ]"#,
-        )
-    }
-
-    fn method_query() -> Result<Query> {
-        Self::create_query(
-            r#"(method
-            name: (identifier) @method_name
-            parameters: (method_parameters
-                            (identifier) @method_parameter)?)"#,
-        )
-    }
-
-    fn singleton_method_query() -> Result<Query> {
-        Self::create_query(
-            r#"(singleton_method
-            name: (identifier) @method_name
-            parameters: (method_parameters
-                         (identifier) @method_parameters)?)"#,
-        )
-    }
-
-    fn constant_query() -> Result<Query> {
-        Self::create_query(r#"(assignment left: (constant) right: (_))"#)
-    }
-
-    fn create_query(query: &str) -> Result<Query> {
-        Ok(Query::new(Self::ruby_language(), query)?)
-    }
-
-    fn ruby_language() -> Language {
-        tree_sitter_ruby::language()
     }
 }
 
