@@ -166,6 +166,10 @@ impl<'a> IndexerV2<'a> {
         result
     }
 
+    pub fn file_symbols(&self, file: &Path) -> Option<&Vec<Arc<RSymbol>>> {
+        self.file_index.get(file)
+    }
+
     pub fn index(&mut self) -> Result<()> {
         let start = Instant::now();
         let stubs_dir = self.ruby_env_provider.stubs_dir()?;
@@ -179,6 +183,7 @@ impl<'a> IndexerV2<'a> {
             .collect::<Vec<Arc<RSymbol>>>();
 
         self.symbols = symbols;
+        self.build_file_index();
 
         info!(
             "Found {} symbols, took {:?}",
@@ -187,6 +192,14 @@ impl<'a> IndexerV2<'a> {
         );
 
         Ok(())
+    }
+
+    fn build_file_index(&mut self) {
+        self.file_index = self.symbols.iter()
+            .group_by(|s| s.file().to_path_buf())
+            .into_iter()
+            .map(|(k, v)| (k, v.cloned().collect()))
+            .collect();
     }
 
     fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {

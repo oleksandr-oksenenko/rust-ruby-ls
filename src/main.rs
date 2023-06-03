@@ -1,5 +1,6 @@
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
+use log::{info, error};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -14,8 +15,9 @@ use anyhow::Result;
 
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
-    request::WorkspaceSymbolRequest,
-    InitializeParams, OneOf, ServerCapabilities, WorkspaceSymbolParams, SymbolInformation, Url, Range, Position, SymbolKind, Location
+    request::{DocumentSymbolRequest, WorkspaceSymbolRequest },
+    InitializeParams, Location, OneOf, Position, Range, ServerCapabilities, SymbolInformation,
+    SymbolKind, Url, WorkspaceSymbolParams,
 };
 
 mod indexer_v2;
@@ -28,18 +30,26 @@ use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
     let file = log4rs::append::file::FileAppender::builder()
-        .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new("{d} - {m}{n}")))
-        .build("/Users/oleksandr.oksenenko/code/rust-ruby-ls/lsp.log").unwrap();
+        .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
+            "{d} - {m}{n}",
+        )))
+        .build("/Users/oleksandr.oksenenko/code/rust-ruby-ls/lsp.log")
+        .unwrap();
     let config = log4rs::Config::builder()
         .appender(log4rs::config::Appender::builder().build("file", Box::new(file)))
-        .build(log4rs::config::Root::builder().appender("file").build(log::LevelFilter::Info)).unwrap();
+        .build(
+            log4rs::config::Root::builder()
+                .appender("file")
+                .build(log::LevelFilter::Info),
+        )
+        .unwrap();
     log4rs::init_config(config).unwrap();
-
 
     let (connection, io_threads) = Connection::stdio();
 
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     })
     .unwrap();
@@ -70,20 +80,35 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
 
         match msg {
             Message::Request(req) => {
+                use lsp_types::request::Request;
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
 
                 eprintln!("got request: {req:?}");
 
-                match cast::<WorkspaceSymbolRequest>(req) {
-                    Ok((id, params)) => {
-                        handle_workspace_symbols_request(&indexer, id, params, &connection)?;
-                        continue;
+                match req.method.as_str() {
+                    WorkspaceSymbolRequest::METHOD => match cast::<WorkspaceSymbolRequest>(req) {
+                        Ok((id, params)) => {
+                            handle_workspace_symbols_request(&indexer, id, params, &connection)?;
+                            continue;
+                        }
+
+                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
+                    },
+
+                    DocumentSymbolRequest::METHOD => match cast::<DocumentSymbolRequest>(req) {
+                        Ok((id, params)) => {
+                            handle_document_symbols_request(&indexer, id, params, &connection)?;
+                            continue;
+                        }
+
+                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
                     }
 
-                    Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"),
-                    Err(ExtractError::MethodMismatch(req)) => req,
+                    m => error!("Unknown method: {}", m)
                 };
             }
 
@@ -108,6 +133,35 @@ where
     req.extract(R::METHOD)
 }
 
+fn handle_document_symbols_request(
+    indexer: &IndexerV2,
+    id: RequestId,
+    params: lsp_types::DocumentSymbolParams,
+    connection: &Connection,
+) -> Result<()> {
+    let start = Instant::now();
+
+    info!("[#{id}] Got document/symbol request, params = {params:?}");
+
+    let path = params.text_document.uri.to_file_path().unwrap();
+    let symbols: Vec<SymbolInformation> = indexer.file_symbols(path.as_path()).unwrap_or(&Vec::new())
+        .iter()
+        .map(|s| convert_to_lsp_sym_info(s))
+        .collect();
+
+    let result = serde_json::to_value(symbols).unwrap();
+
+    info!("[#{id}] document/symbol took {:?}", start.elapsed());
+
+    let resp = Response {
+        id,
+        result: Some(result),
+        error: None
+    };
+    connection.sender.send(Message::Response(resp))?;
+
+    Ok(())
+}
 
 fn handle_workspace_symbols_request(
     indexer_v2: &IndexerV2,
@@ -119,9 +173,10 @@ fn handle_workspace_symbols_request(
 
     let start = Instant::now();
 
-    let symbols: Vec<SymbolInformation> = indexer_v2.fuzzy_find_symbol(&params.query)
+    let symbols: Vec<SymbolInformation> = indexer_v2
+        .fuzzy_find_symbol(&params.query)
         .iter()
-        .map(|s| { convert_to_lsp_sym_info(s) })
+        .map(|s| convert_to_lsp_sym_info(s))
         .collect();
 
     let result = serde_json::to_value(symbols).unwrap();
@@ -162,7 +217,7 @@ fn convert_to_lsp_sym_info(rsymbol: &RSymbol) -> SymbolInformation {
         RSymbol::Method(_) => SymbolKind::METHOD,
         RSymbol::SingletonMethod(_) => SymbolKind::METHOD,
         RSymbol::Constant(_) => SymbolKind::CONSTANT,
-        _ => SymbolKind::NULL
+        _ => SymbolKind::NULL,
     };
 
     SymbolInformation {
@@ -171,7 +226,6 @@ fn convert_to_lsp_sym_info(rsymbol: &RSymbol) -> SymbolInformation {
         tags: None,
         deprecated: None,
         location: Location { uri: url, range },
-        container_name: None
+        container_name: None,
     }
 }
-
