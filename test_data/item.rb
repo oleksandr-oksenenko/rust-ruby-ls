@@ -1,6 +1,16 @@
 # frozen_string_literal: true
 
 class A::B::Item < ActiveRecord::Base
+
+  module ParentModule
+  end
+
+  module Tmp
+    CONSTANT_1 = "qwerty".freeze
+    def m1(a1, a2)
+    end
+  end
+
   include ListingWindowAdjustmentMethods
   include PreprocessMethods
   include PhotoMethods
