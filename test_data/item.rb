@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 class A::B::Item < ActiveRecord::Base
+  CONSTANT = "1234".freeze
 
   module ParentModule
   end

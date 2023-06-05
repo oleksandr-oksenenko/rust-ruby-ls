@@ -170,6 +170,80 @@ impl<'a> IndexerV2<'a> {
         self.file_index.get(file)
     }
 
+    pub fn find_definition(&self, file: &Path, position: Point) -> Vec<Arc<RSymbol>> {
+        let ctx = IndexingContext::new(file).unwrap();
+
+        let node = ctx.tree.root_node();
+        let node = match node.descendant_for_point_range(position, position) {
+            None => {
+                info!("No node found to determine definition");
+                return vec![]
+            },
+            Some(n) => n
+        };
+
+        // traverse down till we hit the whole symbol name
+        let name_to_find = match node.kind() {
+            "constant" => {
+                let mut scope_node = node.parent();
+                let mut scopes = Vec::new();
+                while let Some(n) = scope_node {
+                    match n.kind() {
+                        "constant" => {
+                            scopes.push(n.utf8_text(&ctx.source).unwrap());
+                            break;
+                        },
+                        "scope_resolution" => {
+                            let name_node = n.child_by_field_name("name").unwrap();
+                            scopes.push(name_node.utf8_text(&ctx.source).unwrap());
+
+                            scope_node = n.child_by_field_name("scope");
+                        },
+
+                        _ => {
+                            error!("Unexpected node kind while finding definition: {}", n.kind());
+                            return vec![]
+                        }
+                    }
+                };
+
+                scopes.reverse();
+                scopes.into_iter().join("::")
+            },
+            "call" => {
+                let reciever = node.child_by_field_name("reciever").unwrap();
+                let constant = Self::parse_constant(file, &ctx.source, reciever, None).unwrap();
+
+                constant.name().to_string()
+            },
+
+            _ => {
+                warn!("Find definition of {} node is not supported", node.kind());
+                return vec![]
+            }
+        };
+        
+        info!("Searching for {}", name_to_find);
+
+        let symbols: Vec<Arc<RSymbol>> = self.symbols.iter()
+            .filter_map(|s| {
+                let name = match &**s {
+                    RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.name),
+                    RSymbol::Constant(c) => Some(&c.name),
+                    _ => None
+                };
+
+                match name {
+                    Some(n) if n == &name_to_find => Some(s.clone()),
+                    Some(_) => None,
+                    None => None
+                }
+            })
+            .collect();
+
+        symbols
+    }
+
     pub fn index(&mut self) -> Result<()> {
         let start = Instant::now();
         let stubs_dir = self.ruby_env_provider.stubs_dir()?;
@@ -265,8 +339,8 @@ impl<'a> IndexerV2<'a> {
                 vec![Arc::new(Self::parse_singleton_method(file, source, node, parent))]
             }
 
-            "constant" => {
-                vec![Arc::new(Self::parse_constant(file, source, node, parent))]
+            "assignment" => {
+                Self::parse_constant(file, source, node, parent).map(|c| vec![Arc::new(c)]).unwrap_or_default()
             }
 
             "program" => {
@@ -274,7 +348,7 @@ impl<'a> IndexerV2<'a> {
                 vec![]
             }
 
-            "comment" | "call" | "assignment" => {
+            "comment" | "call" => {
                 // TODO: Implement
                 vec![]
             }
@@ -345,8 +419,21 @@ impl<'a> IndexerV2<'a> {
     ) -> RSymbol {
         assert!(node.kind() == "method" || node.kind() == "singleton_method");
 
+        let scopes = match &parent {
+            Some(p) => match &**p {
+                RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
+                _ => None
+            },
+
+            None => None
+        };
+
         let name_node = node.child_by_field_name("name").unwrap();
         let name = Self::get_node_text(&name_node, source);
+        let name = match scopes {
+            Some(s) => s.iter().join("::") + "::" + &name,
+            None => name
+        };
 
         let mut cursor = node.walk();
         let mut params: Vec<RMethodParam> = Vec::new();
@@ -402,18 +489,37 @@ impl<'a> IndexerV2<'a> {
         source: &[u8],
         node: Node,
         parent: Option<Arc<RSymbol>>,
-    ) -> RSymbol {
+    ) -> Option<RSymbol> {
         assert_eq!(node.kind(), "assignment");
 
         let left = node.child_by_field_name("left").unwrap();
-        assert!(left.kind() == "constant");
+        if left.kind() != "constant" {
+            return None
+        };
 
-        RSymbol::Constant(RConstant {
+        let scopes = match &parent {
+            Some(p) => match &**p {
+                RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
+                _ => None
+            },
+
+            None => None
+        };
+
+        let text = Self::get_node_text(&left, source);
+        info!("Parent present for {} constant: {}", text, parent.is_some());
+
+        let name = match scopes {
+            Some(s) => s.iter().join("::") + "::" + &text,
+            None => text
+        };
+
+        Some(RSymbol::Constant(RConstant {
             file: file.to_owned(),
-            name: Self::get_node_text(&node, source),
+            name,
             location: node.start_position(),
-            parent,
-        })
+            parent
+        }))
     }
 
     fn get_node_text(node: &Node, source: &[u8]) -> String {

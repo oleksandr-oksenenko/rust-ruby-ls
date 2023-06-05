@@ -1,12 +1,12 @@
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
-use log::{info, error};
+use log::{error, info};
+use tree_sitter::Point;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[macro_use]
 extern crate anyhow;
 
 use std::time::Instant;
@@ -15,9 +15,9 @@ use anyhow::Result;
 
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
-    request::{DocumentSymbolRequest, WorkspaceSymbolRequest },
-    InitializeParams, Location, OneOf, Position, Range, ServerCapabilities, SymbolInformation,
-    SymbolKind, Url, WorkspaceSymbolParams,
+    request::{DocumentSymbolRequest, GotoDefinition, WorkspaceSymbolRequest},
+    GotoDefinitionParams, InitializeParams, Location, OneOf, Position, Range, ServerCapabilities,
+    SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams, GotoDefinitionResponse,
 };
 
 mod indexer_v2;
@@ -50,6 +50,7 @@ fn main() -> Result<()> {
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         workspace_symbol_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
         ..Default::default()
     })
     .unwrap();
@@ -58,7 +59,7 @@ fn main() -> Result<()> {
     main_loop(connection, initialization_params)?;
     io_threads.join()?;
 
-    eprintln!("shutting down the server");
+    info!("shutting down the server");
 
     Ok(())
 }
@@ -66,7 +67,7 @@ fn main() -> Result<()> {
 fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     let params: InitializeParams = serde_json::from_value(params).unwrap();
 
-    eprintln!("start main loop");
+    info!("start main loop");
 
     // TODO: fix unwraps
     let path = params.root_uri.unwrap().to_file_path().unwrap();
@@ -76,7 +77,7 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     indexer.index()?;
 
     for msg in &connection.receiver {
-        eprintln!("got msg: {msg:?}");
+        info!("got msg: {msg:?}");
 
         match msg {
             Message::Request(req) => {
@@ -85,7 +86,7 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
                     return Ok(());
                 }
 
-                eprintln!("got request: {req:?}");
+                info!("got request: {req:?}");
 
                 match req.method.as_str() {
                     WorkspaceSymbolRequest::METHOD => match cast::<WorkspaceSymbolRequest>(req) {
@@ -106,18 +107,28 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
 
                         Err(ExtractError::JsonError { .. }) => error!("JsonError"),
                         Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
-                    }
+                    },
 
-                    m => error!("Unknown method: {}", m)
+                    GotoDefinition::METHOD => match cast::<GotoDefinition>(req) {
+                        Ok((id, params)) => {
+                            handle_goto_definition_request(&indexer, id, params, &connection)?;
+                            continue;
+                        }
+
+                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
+                    },
+
+                    m => error!("Unknown method: {}", m),
                 };
             }
 
             Message::Response(resp) => {
-                eprintln!("got response: {resp:?}")
+                info!("got response: {resp:?}")
             }
 
             Message::Notification(not) => {
-                eprintln!("got notification: {not:?}")
+                info!("got notification: {not:?}")
             }
         }
     }
@@ -144,9 +155,11 @@ fn handle_document_symbols_request(
     info!("[#{id}] Got document/symbol request, params = {params:?}");
 
     let path = params.text_document.uri.to_file_path().unwrap();
-    let symbols: Vec<SymbolInformation> = indexer.file_symbols(path.as_path()).unwrap_or(&Vec::new())
+    let symbols: Vec<SymbolInformation> = indexer
+        .file_symbols(path.as_path())
+        .unwrap_or(&Vec::new())
         .iter()
-        .map(|s| convert_to_lsp_sym_info(s))
+        .map(convert_to_lsp_sym_info)
         .collect();
 
     let result = serde_json::to_value(symbols).unwrap();
@@ -156,7 +169,7 @@ fn handle_document_symbols_request(
     let resp = Response {
         id,
         result: Some(result),
-        error: None
+        error: None,
     };
     connection.sender.send(Message::Response(resp))?;
 
@@ -169,14 +182,14 @@ fn handle_workspace_symbols_request(
     params: WorkspaceSymbolParams,
     connection: &Connection,
 ) -> Result<()> {
-    eprintln!("got workspace/symbol request #{id}: {params:?}");
+    info!("got workspace/symbol request #{id}: {params:?}");
 
     let start = Instant::now();
 
     let symbols: Vec<SymbolInformation> = indexer_v2
         .fuzzy_find_symbol(&params.query)
         .iter()
-        .map(|s| convert_to_lsp_sym_info(s))
+        .map(convert_to_lsp_sym_info)
         .collect();
 
     let result = serde_json::to_value(symbols).unwrap();
@@ -189,12 +202,53 @@ fn handle_workspace_symbols_request(
 
     let duration = start.elapsed();
 
-    eprintln!("workspace/symbool took {:?}", duration);
+    info!("workspace/symbool took {:?}", duration);
 
     Ok(())
 }
 
-fn convert_to_lsp_sym_info(rsymbol: &RSymbol) -> SymbolInformation {
+fn handle_goto_definition_request(
+    indexer: &IndexerV2,
+    id: RequestId,
+    params: GotoDefinitionParams,
+    connection: &Connection,
+) -> Result<()> {
+    info!("got textDocument/definition request #{id}: {params:?}");
+
+    let start = Instant::now();
+
+    let file = params.text_document_position_params.text_document.uri.to_file_path().unwrap();
+    let position = params.text_document_position_params.position;
+    let position = Point {
+        row: position.line.try_into()? ,
+        column: position.character.try_into()?
+    };
+
+    let symbols: Vec<Location> = indexer.find_definition(file.as_path(), position).iter()
+        .map(convert_to_lsp_sym_info)
+        .map(|s| s.location)
+        .collect();
+
+    info!("textDocument/definition found {} symbols", symbols.len());
+
+    let result = GotoDefinitionResponse::Array(symbols);
+    let result = serde_json::to_value(result).unwrap();
+    let resp = Response {
+        id,
+        result: Some(result),
+        error: None,
+    };
+    connection.sender.send(Message::Response(resp))?;
+
+    let duration = start.elapsed();
+
+    info!("textDocument/definition took {:?}", duration);
+
+    Ok(())
+}
+
+fn convert_to_lsp_sym_info(rsymbol: impl AsRef<RSymbol>) -> SymbolInformation {
+    let rsymbol = rsymbol.as_ref();
     let path = rsymbol.file();
     let file_path_str = path.to_str().unwrap();
     let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
