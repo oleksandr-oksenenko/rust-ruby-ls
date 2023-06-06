@@ -1,6 +1,12 @@
 # frozen_string_literal: true
 
 class A::B::Item < ActiveRecord::Base
+  include A
+  include A::B::C::D::E
+
+  REASONS = ['a', 'b', 'c', 'd', 'e', 'f'].freeze
+  CONSIGNMENT_LOST, CONSIGNMENT_EXPIRED, INCORRECT_PLACEMENT, ADMIN, STORE_BUYOUT, RAAS_MENS_UPFRONT = REASONS
+
   CONSTANT = "1234".freeze
 
   module ParentModule

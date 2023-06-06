@@ -137,7 +137,7 @@ pub struct IndexerV2<'a> {
     progress_reporter: ProgressReporter<'a>,
     ruby_env_provider: RubyEnvProvider,
     symbols: Vec<Arc<RSymbol>>,
-    file_index: HashMap<PathBuf, Vec<Arc<RSymbol>>>
+    file_index: HashMap<PathBuf, Vec<Arc<RSymbol>>>,
 }
 
 impl<'a> IndexerV2<'a> {
@@ -148,7 +148,7 @@ impl<'a> IndexerV2<'a> {
             root_dir,
             progress_reporter,
             symbols: Vec::new(),
-            file_index: HashMap::new()
+            file_index: HashMap::new(),
         }
     }
 
@@ -177,66 +177,66 @@ impl<'a> IndexerV2<'a> {
         let node = match node.descendant_for_point_range(position, position) {
             None => {
                 info!("No node found to determine definition");
-                return vec![]
-            },
-            Some(n) => n
+                return vec![];
+            }
+            Some(n) => n,
         };
 
         // traverse down till we hit the whole symbol name
-        let name_to_find = match node.kind() {
+        let names_to_find = match node.kind() {
             "constant" => {
-                let mut scope_node = node.parent();
-                let mut scopes = Vec::new();
-                while let Some(n) = scope_node {
-                    match n.kind() {
-                        "constant" => {
-                            scopes.push(n.utf8_text(&ctx.source).unwrap());
-                            break;
-                        },
-                        "scope_resolution" => {
-                            let name_node = n.child_by_field_name("name").unwrap();
-                            scopes.push(name_node.utf8_text(&ctx.source).unwrap());
+                let mut scopes = Self::get_partial_scope(&node, &ctx.source);
 
-                            scope_node = n.child_by_field_name("scope");
-                        },
-
-                        _ => {
-                            error!("Unexpected node kind while finding definition: {}", n.kind());
-                            return vec![]
-                        }
-                    }
-                };
-
+                let mut parent_scopes = Self::get_node_parent_scope(&node, &ctx.source);
+                parent_scopes.reverse();
                 scopes.reverse();
-                scopes.into_iter().join("::")
-            },
+
+                let scopes = scopes.into_iter().join("::");
+
+                if !parent_scopes.is_empty() {
+                    let parent_scopes = parent_scopes.into_iter().join("::") + "::" + &scopes;
+                    vec![scopes, parent_scopes]
+                } else {
+                    vec![scopes]
+                }
+            }
             "call" => {
                 let reciever = node.child_by_field_name("reciever").unwrap();
-                let constant = Self::parse_constant(file, &ctx.source, reciever, None).unwrap();
+                let constant = Self::parse_constant(file, &ctx.source, &reciever, None).unwrap();
 
-                constant.name().to_string()
-            },
+                vec![constant.name().to_string()]
+            }
 
             _ => {
                 warn!("Find definition of {} node is not supported", node.kind());
-                return vec![]
+                return vec![];
             }
         };
-        
-        info!("Searching for {}", name_to_find);
 
-        let symbols: Vec<Arc<RSymbol>> = self.symbols.iter()
+        info!("Searching for {:?}", names_to_find);
+
+        let symbols = self
+            .symbols
+            .iter()
             .filter_map(|s| {
                 let name = match &**s {
                     RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.name),
                     RSymbol::Constant(c) => Some(&c.name),
-                    _ => None
+                    _ => None,
                 };
 
                 match name {
-                    Some(n) if n == &name_to_find => Some(s.clone()),
-                    Some(_) => None,
-                    None => None
+                    Some(n) => {
+                        let mut symbol = None;
+                        for name_to_find in &names_to_find {
+                            if n == name_to_find {
+                                symbol = Some(s.clone());
+                                break;
+                            }
+                        }
+                        symbol
+                    }
+                    None => None,
                 }
             })
             .collect();
@@ -269,7 +269,9 @@ impl<'a> IndexerV2<'a> {
     }
 
     fn build_file_index(&mut self) {
-        self.file_index = self.symbols.iter()
+        self.file_index = self
+            .symbols
+            .iter()
             .group_by(|s| s.file().to_path_buf())
             .into_iter()
             .map(|(k, v)| (k, v.cloned().collect()))
@@ -327,21 +329,23 @@ impl<'a> IndexerV2<'a> {
         parent: Option<Arc<RSymbol>>,
     ) -> Vec<Arc<RSymbol>> {
         match node.kind() {
-            "class" | "module" => {
-                Self::parse_class(file, source, node, parent)
-            }
+            "class" | "module" => Self::parse_class(file, source, node, parent),
 
             "method" => {
                 vec![Arc::new(Self::parse_method(file, source, node, parent))]
             }
 
             "singleton_method" => {
-                vec![Arc::new(Self::parse_singleton_method(file, source, node, parent))]
+                vec![Arc::new(Self::parse_singleton_method(
+                    file, source, node, parent,
+                ))]
             }
 
-            "assignment" => {
-                Self::parse_constant(file, source, node, parent).map(|c| vec![Arc::new(c)]).unwrap_or_default()
-            }
+            "assignment" => Self::parse_assignment(file, source, node, parent)
+                .unwrap_or(Vec::new())
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
 
             "program" => {
                 info!("empty file: {:?}", file);
@@ -422,17 +426,17 @@ impl<'a> IndexerV2<'a> {
         let scopes = match &parent {
             Some(p) => match &**p {
                 RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
-                _ => None
+                _ => None,
             },
 
-            None => None
+            None => None,
         };
 
         let name_node = node.child_by_field_name("name").unwrap();
         let name = Self::get_node_text(&name_node, source);
         let name = match scopes {
             Some(s) => s.iter().join("::") + "::" + &name,
-            None => name
+            None => name,
         };
 
         let mut cursor = node.walk();
@@ -484,46 +488,182 @@ impl<'a> IndexerV2<'a> {
         }
     }
 
-    fn parse_constant(
+    fn parse_assignment(
         file: &Path,
         source: &[u8],
         node: Node,
         parent: Option<Arc<RSymbol>>,
-    ) -> Option<RSymbol> {
+    ) -> Option<Vec<RSymbol>> {
         assert_eq!(node.kind(), "assignment");
 
-        let left = node.child_by_field_name("left").unwrap();
-        if left.kind() != "constant" {
-            return None
-        };
+        let lhs = node.child_by_field_name("left").unwrap();
+
+        match lhs.kind() {
+            "constant" => Self::parse_constant(file, source, &lhs, parent).map(|c| vec![c]),
+
+            "left_assignment_list" => {
+                // Only handle constants
+                let mut cursor = lhs.walk();
+                Some(
+                    lhs.named_children(&mut cursor)
+                        .filter(|n| n.kind() == "constant" || n.kind() == "rest_assignment")
+                        .filter_map(|node| Self::parse_constant(file, source, &node, parent.clone()))
+                        .collect(),
+                )
+            },
+
+            "global_variable" => {
+                // TODO: parse global variables as constants
+                None
+            },
+
+            "scope_resolution" => {
+                // TODO: parse scope resolution constant assignment
+                None
+            },
+
+            "instance_variable" | "class_variable" => {
+                // TODO: parse instance and class variables
+                None
+            },
+
+            "identifier" => {
+                // TODO: variable declaration, should parse?
+                None
+            },
+
+            "element_reference" => {
+                // TODO: e.g. putting into a Hash or Array, should parse?
+                None
+            },
+
+            "call" => {
+                // TODO: parse attr_accessors
+                None
+            },
+
+            _ => {
+                warn!("Unknown assignment 'left' node kind: {}, file: {:?}, range: {:?}", lhs.kind(), file, lhs.range());
+                None
+            }
+        }
+    }
+
+    fn parse_constant(
+        file: &Path,
+        source: &[u8],
+        node: &Node,
+        parent: Option<Arc<RSymbol>>,
+    ) -> Option<RSymbol> {
+        if node.kind() != "constant" && node.kind() != "rest_assignment" {
+            error!("{} instead of constant in {file:?} at {:?}", node.kind(), node.range());
+        }
+
+        let node = if node.kind() == "rest_assignment" {
+            node.child(0).unwrap()
+        } else { *node };
 
         let scopes = match &parent {
             Some(p) => match &**p {
                 RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
-                _ => None
+                _ => None,
             },
 
-            None => None
+            None => None,
         };
-
-        let text = Self::get_node_text(&left, source);
-        info!("Parent present for {} constant: {}", text, parent.is_some());
+        let text = Self::get_node_text(&node, source);
 
         let name = match scopes {
             Some(s) => s.iter().join("::") + "::" + &text,
-            None => text
+            None => text,
         };
 
         Some(RSymbol::Constant(RConstant {
             file: file.to_owned(),
             name,
             location: node.start_position(),
-            parent
+            parent,
         }))
     }
 
     fn get_node_text(node: &Node, source: &[u8]) -> String {
         node.utf8_text(source).unwrap().to_owned()
+    }
+
+    fn get_node_parent_scope(node: &Node, source: &[u8]) -> Vec<String> {
+        let mut scopes = Vec::new();
+
+        let mut node = Some(*node);
+        while let Some(p) = node {
+            match p.kind() {
+                "class" | "module" => {
+                    let name_node = p.child_by_field_name("name").unwrap();
+                    let mut class_scopes = Self::get_scopes(&name_node, source);
+                    class_scopes.reverse();
+                    scopes.append(&mut class_scopes);
+
+                    node = p.parent()
+                }
+
+                _ => {
+                    node = p.parent()
+                }
+            }
+        }
+
+        scopes
+    }
+
+    fn get_partial_scope<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
+        assert!(node.kind() == "constant");
+
+        let parent = node.parent().unwrap();
+        if parent.kind() != "scope_resolution" {
+            // single constant without a scope
+            return vec![node.utf8_text(source).unwrap()];
+        }
+
+        // determine if node is a "scope" or a "name"
+        let scope_node = parent.child_by_field_name("scope").unwrap();
+        let name_node = parent.child_by_field_name("name").unwrap();
+        let is_scope = scope_node.range() == node.range();
+        let is_name = name_node.range() == node.range();
+        assert!(is_scope || is_name);
+
+        // it's the first constant in the "scope_resolution", just return it (e.g. A in A::B::C)
+        if is_scope {
+            return vec![node.utf8_text(source).unwrap()];
+        }
+
+        // go down from the current node to get scopes on the left (e.g. A::B::C in A::B::C::D if
+        // cursor is on C)
+        let mut scopes = Vec::new();
+        let parent = node.parent();
+        if let Some(p) = parent {
+            // if let + condition is in nightly only
+            if p.kind() == "scope_resolution" {
+                let name = p.child_by_field_name("name").unwrap();
+                scopes.push(name.utf8_text(source).unwrap());
+
+                let mut scope = p.child_by_field_name("scope");
+                while let Some(s) = scope {
+                    match s.kind() {
+                        "scope_resolution" => {
+                            let name = s.child_by_field_name("name").unwrap();
+                            scopes.push(name.utf8_text(source).unwrap());
+                            scope = s.child_by_field_name("scope");
+                        }
+                        "constant" => {
+                            scopes.push(s.utf8_text(source).unwrap());
+                            break;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        scopes
     }
 
     fn get_scopes(main_node: &Node, source: &[u8]) -> Vec<String> {
