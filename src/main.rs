@@ -21,6 +21,7 @@ use lsp_types::{
 };
 
 mod indexer_v2;
+mod ruby_env_provider;
 use indexer_v2::*;
 
 mod symbols_matcher;
