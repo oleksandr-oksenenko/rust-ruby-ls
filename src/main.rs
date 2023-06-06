@@ -22,11 +22,11 @@ use lsp_types::{
 
 mod indexer_v2;
 mod ruby_env_provider;
-use indexer_v2::*;
-
+mod parsers;
 mod symbols_matcher;
-
 mod progress_reporter;
+
+use indexer_v2::*;
 use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
