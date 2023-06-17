@@ -7,9 +7,10 @@ use tree_sitter::Node;
 
 use crate::indexer_v2::{RClass, RConstant, RMethod, RMethodParam, RSymbol};
 
-const SCOPE_DELIMITER: &str = "::";
+pub const SCOPE_DELIMITER: &str = "::";
 
 #[derive(PartialEq, Eq, Debug, EnumString, AsRefStr, IntoStaticStr, Display)]
+#[strum(serialize_all = "snake_case")]
 enum NodeKind {
     Class,
     Module,
@@ -26,7 +27,6 @@ enum NodeKind {
     ClassVariable,
     InstanceVariable,
     Identifier,
-    ElementReference,
     RestAssignment,
     OptionalParameter,
     KeywordParameter,
@@ -38,15 +38,9 @@ impl PartialEq<NodeKind> for &str {
         (*self).eq(other)
     }
 }
-impl PartialEq<&str> for NodeKind {
-    fn eq(&self, other: &&str) -> bool {
-        let s: &str = self.into();
-        s.eq(*other)
-    }
-}
-
 
 #[derive(PartialEq, Eq, Debug, EnumString, AsRefStr, IntoStaticStr, Display)]
+#[strum(serialize_all = "snake_case")]
 enum NodeName {
     Name,
     Superclass,
@@ -68,7 +62,12 @@ pub fn parse(
     node: Node,
     parent: Option<Arc<RSymbol>>,
 ) -> Vec<Arc<RSymbol>> {
-    match node.kind().try_into().unwrap() {
+    let node_kind = match node.kind().try_into() {
+        Ok(k) => k,
+        Err(_) => return vec![],
+    };
+
+    match node_kind {
         NodeKind::Class | NodeKind::Module => parse_class(file, source, node, parent),
 
         NodeKind::Method => {
@@ -111,18 +110,20 @@ pub fn parse_class(
     assert!(node.kind() == NodeKind::Class || node.kind() == NodeKind::Module);
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
-    let scopes = get_scopes(&name_node, source);
+    let scopes = get_full_and_context_scope(&name_node, source);
     let name = scopes.iter().join(SCOPE_DELIMITER);
     let superclass_scopes = node
         .child_by_field_name(NodeName::Superclass)
-        .map(|n| get_scopes(&n, source))
+        .and_then(|n| n.child_by_field_name(NodeName::Name))
+        .map(|n| get_full_and_context_scope(&n, source))
+        .map(|s| s.into_iter().map(|s| s.to_string()).collect())
         .unwrap_or(Vec::default());
 
     let rclass = RClass {
         file: file.to_path_buf(),
         name,
         location: name_node.start_position(),
-        scopes: get_scopes(&name_node, source),
+        scopes: scopes.into_iter().map(|s| s.to_string()).collect(),
         superclass_scopes,
         parent,
     };
@@ -171,9 +172,9 @@ pub fn parse_method(
     };
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
-    let name = get_node_text(&name_node, source);
+    let name = name_node.utf8_text(source).unwrap().to_string();
     let name = match scopes {
-        Some(s) => s.iter().join(SCOPE_DELIMITER) + SCOPE_DELIMITER+ &name,
+        Some(s) => s.iter().join(SCOPE_DELIMITER) + SCOPE_DELIMITER + &name,
         None => name,
     };
 
@@ -182,15 +183,17 @@ pub fn parse_method(
     if let Some(method_parameters) = node.child_by_field_name(NodeName::MethodParameters) {
         for param in method_parameters.children(&mut cursor) {
             let param = match param.kind().try_into().unwrap() {
-                NodeKind::Identifier => RMethodParam::Regular(get_node_text(&param, source)),
+                NodeKind::Identifier => {
+                    RMethodParam::Regular(param.utf8_text(source).unwrap().to_string())
+                }
                 NodeKind::OptionalParameter => {
-                    let name =
-                        get_node_text(&param.child_by_field_name(NodeName::Name).unwrap(), source);
+                    let name_node = param.child_by_field_name(NodeName::Name).unwrap();
+                    let name = name_node.utf8_text(source).unwrap().to_string();
                     RMethodParam::Optional(name)
                 }
                 NodeKind::KeywordParameter => {
-                    let name =
-                        get_node_text(&param.child_by_field_name(NodeName::Name).unwrap(), source);
+                    let name_node = param.child_by_field_name(NodeName::Name).unwrap();
+                    let name = name_node.utf8_text(source).unwrap().to_string();
                     RMethodParam::Keyword(name)
                 }
 
@@ -232,7 +235,11 @@ fn parse_assignment(
 
     let lhs = node.child_by_field_name(NodeName::Left).unwrap();
 
-    match lhs.kind().try_into().unwrap() {
+    let node_kind: NodeKind = match lhs.kind().try_into() {
+        Err(_) => return None,
+        Ok(nk) => nk,
+    };
+    match node_kind {
         NodeKind::Constant => parse_constant(file, source, &lhs, parent).map(|c| vec![c]),
 
         NodeKind::LeftAssignmentList => {
@@ -240,7 +247,9 @@ fn parse_assignment(
             let mut cursor = lhs.walk();
             Some(
                 lhs.named_children(&mut cursor)
-                    .filter(|n| n.kind() == NodeKind::Constant || n.kind() ==NodeKind::RestAssignment)
+                    .filter(|n| {
+                        n.kind() == NodeKind::Constant || n.kind() == NodeKind::RestAssignment
+                    })
                     .filter_map(|node| parse_constant(file, source, &node, parent.clone()))
                     .collect(),
             )
@@ -263,11 +272,6 @@ fn parse_assignment(
 
         NodeKind::Identifier => {
             // TODO: variable declaration, should parse?
-            None
-        }
-
-        NodeKind::ElementReference => {
-            // TODO: e.g. putting into a Hash or Array, should parse?
             None
         }
 
@@ -316,7 +320,7 @@ pub fn parse_constant(
 
         None => None,
     };
-    let text = get_node_text(&node, source);
+    let text = node.utf8_text(source).unwrap().to_string();
 
     let name = match scopes {
         Some(s) => s.iter().join(SCOPE_DELIMITER) + SCOPE_DELIMITER + &text,
@@ -331,33 +335,63 @@ pub fn parse_constant(
     }))
 }
 
-pub fn get_node_text(node: &Node, source: &[u8]) -> String {
-    node.utf8_text(source).unwrap().to_owned()
-}
-
-pub fn get_node_parent_scope(node: &Node, source: &[u8]) -> Vec<String> {
+/*
+ * Gets the scope of the enclosing classes and modules.
+ * */
+pub fn get_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
     let mut scopes = Vec::new();
 
-    let mut node = Some(*node);
-    while let Some(p) = node {
-        match p.kind().try_into().unwrap() {
-            NodeKind::Class | NodeKind::Module => {
-                let name_node = p.child_by_field_name(NodeName::Name).unwrap();
-                let mut class_scopes = get_scopes(&name_node, source);
-                class_scopes.reverse();
-                scopes.append(&mut class_scopes);
+    // find out if node is part of the class/module scope resolution
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        match p.kind().try_into() {
+            Err(_) => break,
 
-                node = p.parent()
-            }
+            Ok(nk) => match nk {
+                NodeKind::ScopeResolution => parent = p.parent(),
+                NodeKind::Class | NodeKind::Module => {
+                    parent = p.parent();
+                    break;
+                }
 
-            _ => node = p.parent(),
+                _ => break,
+            },
         }
     }
 
-    scopes
+    // traverse all parents and write down all scopes found along the way
+    while let Some(p) = parent {
+        match p.kind().try_into() {
+            Err(_) => parent = p.parent(),
+
+            Ok(nk) => match nk {
+                NodeKind::Class | NodeKind::Module => {
+                    let class_name_node = p.child_by_field_name(NodeName::Name).unwrap();
+                    let class_scopes = get_full_scope_resolution(&class_name_node, source);
+
+                    scopes.push(class_scopes);
+
+                    parent = p.parent()
+                }
+
+                _ => parent = p.parent(),
+            },
+        }
+    }
+
+    scopes.into_iter().rev().flatten().collect()
 }
 
-pub fn get_partial_scope<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
+/*
+ * Get the scope prior to the constant, e.g. if node is B in A::B::C the function will return [B, A].
+ */
+pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
+    let node = if node.kind() == NodeKind::ScopeResolution {
+        node.child_by_field_name(NodeName::Name).unwrap()
+    } else {
+        *node
+    };
+
     assert!(node.kind() == NodeKind::Constant);
 
     let parent = node.parent().unwrap();
@@ -366,10 +400,11 @@ pub fn get_partial_scope<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
         return vec![node.utf8_text(source).unwrap()];
     }
 
-    // determine if node is a "scope" or a "name"
-    let scope_node = parent.child_by_field_name(NodeName::Scope).unwrap();
+    let scope_node = parent.child_by_field_name(NodeName::Scope);
     let name_node = parent.child_by_field_name(NodeName::Name).unwrap();
-    let is_scope = scope_node.range() == node.range();
+    let is_scope = scope_node
+        .map(|n| n.range() == node.range())
+        .unwrap_or(false);
     let is_name = name_node.range() == node.range();
     assert!(is_scope || is_name);
 
@@ -406,46 +441,335 @@ pub fn get_partial_scope<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
         }
     }
 
+    scopes.reverse();
     scopes
 }
 
-pub fn get_scopes(main_node: &Node, source: &[u8]) -> Vec<String> {
+/*
+ * Get the scope after the constant, e.g. if node is B in A::B::C the function will return [B, C].
+ */
+pub fn get_child_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+    let node = if node.kind() == NodeKind::ScopeResolution {
+        node.child_by_field_name(NodeName::Name).unwrap()
+    } else {
+        *node
+    };
+    assert!(node.kind() == NodeKind::Constant);
+
+    let parent = node.parent().unwrap();
+    if parent.kind() != NodeKind::ScopeResolution {
+        // single constant without a scope
+        return vec![node.utf8_text(source).unwrap()];
+    }
+
+    let scope_node = parent.child_by_field_name(NodeName::Scope);
+    let name_node = parent.child_by_field_name(NodeName::Name).unwrap();
+    let is_scope = scope_node
+        .map(|n| n.range() == node.range())
+        .unwrap_or(false);
+    let is_name = name_node.range() == node.range();
+    assert!(is_scope || is_name);
+
     let mut scopes = Vec::new();
-
-    if main_node.kind() == NodeKind::ScopeResolution {
-        let mut node = *main_node;
-        while node.kind() == NodeKind::ScopeResolution {
-            let name_node = node.child_by_field_name(NodeName::Name).unwrap();
-            let name = name_node.utf8_text(source).unwrap().to_owned();
-            scopes.push(name);
-
-            let child = node.child_by_field_name(NodeName::Scope);
-            match child {
-                None => break,
-                Some(n) => node = n,
-            }
-        }
-        if node.kind() == NodeKind::Constant {
-            let name = node.utf8_text(source).unwrap().to_owned();
-            scopes.push(name);
-        }
-    }
-    if main_node.kind() == NodeKind::Constant {
-        let name = main_node.utf8_text(source).unwrap().to_owned();
-        scopes.push(name);
+    if is_scope {
+        scopes.push(node.utf8_text(source).unwrap());
     }
 
-    let class_node = main_node.parent();
-    let mut class_parent_node = class_node.and_then(|p| p.parent());
-    while let Some(parent) = class_parent_node {
-        if parent.kind() == NodeKind::Class || parent.kind() == NodeKind::Module {
-            let parent_class_name = parent.child_by_field_name(NodeName::Name).unwrap();
-            let scope = parent_class_name.utf8_text(source).unwrap().to_owned();
-            scopes.push(scope);
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if p.kind() != NodeKind::ScopeResolution {
+            break;
+        } else {
+            let name = p.child_by_field_name(NodeName::Name).unwrap();
+            scopes.push(name.utf8_text(source).unwrap());
+            parent = p.parent();
         }
-        class_parent_node = parent.parent();
     }
-    scopes.reverse();
 
     scopes
+}
+
+/*
+ * Get both parent and child scopes of the scope resolution.
+ */
+pub fn get_full_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+    let child_scopes = get_child_scope_resolution(node, source);
+    let parent_scopes = get_parent_scope_resolution(node, source);
+
+    parent_scopes
+        .into_iter()
+        .chain(child_scopes.into_iter().skip(1))
+        .collect()
+}
+
+/*
+ * Get combined context scope and full scope resolution.
+ */
+pub fn get_full_and_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+    let full_scope = get_full_scope_resolution(node, source);
+    let context_scope = get_context_scope(node, source);
+
+    context_scope.into_iter().chain(full_scope).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use tree_sitter::{Node, Parser, Point, Tree};
+
+    use super::{
+        get_child_scope_resolution, get_context_scope, get_full_and_context_scope,
+        get_full_scope_resolution, get_parent_scope_resolution,
+    };
+
+    const SOURCE: &str = r#"
+class A::B < X::Y::Z
+    module C::D
+        module E::F::G
+            class H::I::J
+                CONSTANT = ""
+                ::V::C = 10
+            end
+        end
+    end
+end
+"#;
+
+    #[cfg(test)]
+    mod get_child_scope_resolution_tests {
+        use super::*;
+
+        #[test]
+        fn get_child_scope_resolution_test() {
+            let point = Point { row: 3, column: 18 };
+            let expected_scopes = vec!["F", "G"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_child_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_child_scope_resolution_test_2() {
+            let point = Point { row: 6, column: 18 };
+            let expected_scopes = vec!["V", "C"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_child_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_child_scope_resolution_test_3() {
+            let point = Point { row: 1, column: 13 };
+            let expected_scopes = vec!["X", "Y", "Z"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_child_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod get_parent_scope_resolution_tests {
+        use super::*;
+
+        #[test]
+        fn get_parent_scope_resolution_test() {
+            let point = Point { row: 3, column: 18 };
+            let expected_scopes = vec!["E", "F"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_parent_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_parent_scope_resolution_test_2() {
+            let point = Point { row: 6, column: 21 };
+            let expected_scopes = vec!["V", "C"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_parent_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_parent_scope_resolution_test_3() {
+            let point = Point { row: 1, column: 19 };
+            let expected_scopes = vec!["X", "Y", "Z"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_parent_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod get_full_scope_resulution_tests {
+        use super::*;
+
+        #[test]
+        fn get_full_scope_resolution_test() {
+            let points = [Point { row: 1, column: 6 }, Point { row: 1, column: 9 }];
+            let expected_scopes = vec!["A", "B"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_full_scope_resolution(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_full_scope_resolution_test_2() {
+            let points = [Point { row: 2, column: 11 }, Point { row: 2, column: 14 }];
+            let expected_scopes = vec!["C", "D"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_full_scope_resolution(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_full_scope_resolution_test_3() {
+            let points = [
+                Point { row: 3, column: 15 },
+                Point { row: 3, column: 18 },
+                Point { row: 3, column: 21 },
+            ];
+            let expected_scopes = vec!["E", "F", "G"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_full_scope_resolution(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_full_scope_resolution_test_4() {
+            let points = [
+                Point { row: 4, column: 18 },
+                Point { row: 4, column: 21 },
+                Point { row: 4, column: 24 },
+            ];
+            let expected_scopes = vec!["H", "I", "J"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_full_scope_resolution(n, SOURCE.as_bytes())
+                })
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod get_context_scope_tests {
+        use super::*;
+
+        #[test]
+        fn get_context_scope_test() {
+            let points = [Point { row: 2, column: 11 }, Point { row: 2, column: 14 }];
+            let expected_scopes = vec!["A", "B"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_context_scope(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_context_scope_test_2() {
+            let points = [
+                Point { row: 3, column: 15 },
+                Point { row: 3, column: 18 },
+                Point { row: 3, column: 21 },
+            ];
+            let expected_scopes = vec!["A", "B", "C", "D"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_context_scope(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_context_scope_test_3() {
+            let points = [
+                Point { row: 4, column: 18 },
+                Point { row: 4, column: 21 },
+                Point { row: 4, column: 24 },
+            ];
+            let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_context_scope(n, SOURCE.as_bytes())
+                })
+            }
+        }
+
+        #[test]
+        fn get_context_scope_test_4() {
+            let points = [Point { row: 5, column: 18 }, Point { row: 5, column: 21 }];
+            let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+            for point in points {
+                test(SOURCE, &point, &expected_scopes, |n| {
+                    get_context_scope(n, SOURCE.as_bytes())
+                })
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod get_full_and_context_scope_tests {
+        use super::*;
+
+        #[test]
+        fn get_full_and_context_scope_test() {
+            let point = Point { row: 6, column: 18 };
+            let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "V", "C"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_full_and_context_scope(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_full_and_context_scope_test_2() {
+            let point = Point { row: 2, column: 11 };
+            let expected_scopes = vec!["A", "B", "C", "D"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_full_and_context_scope(n, SOURCE.as_bytes())
+            })
+        }
+    }
+
+    fn test<'a, F>(source: &str, point: &Point, expected_values: &[&'a str], f: F)
+    where
+        F: FnOnce(&Node) -> Vec<&'a str>,
+    {
+        let parsed = parse_source(source);
+        let node = parsed
+            .root_node()
+            .descendant_for_point_range(*point, *point)
+            .unwrap();
+
+        let actual = f(&node);
+
+        assert_eq!(expected_values, actual);
+    }
+
+    fn parse_source(source: &str) -> Tree {
+        let language = tree_sitter_ruby::language();
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+        parser.parse(source.as_bytes(), None).unwrap()
+    }
 }

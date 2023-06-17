@@ -15,7 +15,8 @@ use tree_sitter::{ Node, Parser, Point, Tree};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
-use crate::parsers::{parse, parse_constant, get_node_parent_scope, get_partial_scope};
+use crate::parsers;
+use crate::parsers::{parse, parse_constant, get_context_scope, get_parent_scope_resolution};
 use crate::ruby_env_provider::RubyEnvProvider;
 use crate::progress_reporter::ProgressReporter;
 use crate::symbols_matcher::SymbolsMatcher;
@@ -178,19 +179,14 @@ impl<'a> IndexerV2<'a> {
         // traverse down till we hit the whole symbol name
         let names_to_find = match node.kind() {
             "constant" => {
-                let mut scopes = get_partial_scope(&node, &ctx.source);
+                let constant_scope = get_parent_scope_resolution(&node, &ctx.source).into_iter().join(parsers::SCOPE_DELIMITER);
+                let context_scope = get_context_scope(&node, &ctx.source).into_iter().join(parsers::SCOPE_DELIMITER);
 
-                let mut parent_scopes = get_node_parent_scope(&node, &ctx.source);
-                parent_scopes.reverse();
-                scopes.reverse();
-
-                let scopes = scopes.into_iter().join("::");
-
-                if !parent_scopes.is_empty() {
-                    let parent_scopes = parent_scopes.into_iter().join("::") + "::" + &scopes;
-                    vec![scopes, parent_scopes]
+                if !context_scope.is_empty() {
+                    let full_scope = context_scope + parsers::SCOPE_DELIMITER + &constant_scope;
+                    vec![constant_scope, full_scope]
                 } else {
-                    vec![scopes]
+                    vec![constant_scope]
                 }
             }
             "call" => {
