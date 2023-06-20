@@ -25,6 +25,7 @@ mod ruby_env_provider;
 mod parsers;
 mod symbols_matcher;
 mod progress_reporter;
+mod ruby_filename_converter;
 
 use indexer_v2::*;
 use progress_reporter::ProgressReporter;

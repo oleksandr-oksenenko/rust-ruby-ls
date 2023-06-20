@@ -11,14 +11,15 @@ use anyhow::Result;
 use itertools::Itertools;
 use log::{error, info, warn};
 use rayon::prelude::*;
-use tree_sitter::{ Node, Parser, Point, Tree};
+use tree_sitter::{Node, Parser, Point, Tree};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
 use crate::parsers;
-use crate::parsers::{parse, parse_constant, get_context_scope, get_parent_scope_resolution};
-use crate::ruby_env_provider::RubyEnvProvider;
+use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse, parse_constant};
 use crate::progress_reporter::ProgressReporter;
+use crate::ruby_env_provider::RubyEnvProvider;
+use crate::ruby_filename_converter;
 use crate::symbols_matcher::SymbolsMatcher;
 
 pub enum RSymbol {
@@ -28,7 +29,7 @@ pub enum RSymbol {
     SingletonMethod(RMethod),
     Constant(RConstant),
     Variable(RVariable),
-    ClassVariable(RVariable)
+    ClassVariable(RVariable),
 }
 
 impl RSymbol {
@@ -52,7 +53,7 @@ impl RSymbol {
             RSymbol::SingletonMethod(method) => &method.file,
             RSymbol::Constant(constant) => &constant.file,
             RSymbol::Variable(variable) => &variable.file,
-            RSymbol::ClassVariable(v) => &v.file
+            RSymbol::ClassVariable(v) => &v.file,
         }
     }
 
@@ -176,61 +177,108 @@ impl<'a> IndexerV2<'a> {
             Some(n) => n,
         };
 
-        // traverse down till we hit the whole symbol name
-        let names_to_find = match node.kind() {
-            "constant" => {
-                let constant_scope = get_parent_scope_resolution(&node, &ctx.source).into_iter().join(parsers::SCOPE_DELIMITER);
-                let context_scope = get_context_scope(&node, &ctx.source).into_iter().join(parsers::SCOPE_DELIMITER);
-
-                if !context_scope.is_empty() {
-                    let full_scope = context_scope + parsers::SCOPE_DELIMITER + &constant_scope;
-                    vec![constant_scope, full_scope]
-                } else {
-                    vec![constant_scope]
-                }
-            }
-            "call" => {
-                let reciever = node.child_by_field_name("reciever").unwrap();
-                let constant = parse_constant(file, &ctx.source, &reciever, None).unwrap();
-
-                vec![constant.name().to_string()]
-            }
-
-            _ => {
-                warn!("Find definition of {} node is not supported", node.kind());
+        let node = match node.kind().try_into() {
+            Err(_) => {
+                error!("Unknown node kind in find definition: {}", node.kind());
                 return vec![];
             }
+            Ok(nk) => match nk {
+                parsers::NodeKind::Constant => node,
+                parsers::NodeKind::Call => node
+                    .child_by_field_name(parsers::NodeName::Reciever)
+                    .unwrap(),
+                _ => {
+                    warn!("Find definition of {} node is not supported", node.kind());
+                    return vec![];
+                }
+            },
         };
 
-        info!("Searching for {:?}", names_to_find);
+        // traverse down till we hit the whole symbol name
+        let constant_scope = get_parent_scope_resolution(&node, &ctx.source);
+        let is_global = constant_scope
+            .first()
+            .map(|s| *s == parsers::GLOBAL_SCOPE_VALUE)
+            .unwrap_or(false);
+        let constant_scope = if is_global {
+            constant_scope
+                .into_iter()
+                .skip(1)
+                .join(parsers::SCOPE_DELIMITER)
+        } else {
+            constant_scope.into_iter().join(parsers::SCOPE_DELIMITER)
+        };
 
-        let symbols = self
-            .symbols
+        let context_scope = get_context_scope(&node, &ctx.source)
+            .into_iter()
+            .chain([constant_scope.as_str()])
+            .join(parsers::SCOPE_DELIMITER);
+
+        let file_scope = ruby_filename_converter::path_to_scope(&self.root_dir, file);
+        let mut file_scope = file_scope.unwrap_or(vec![]);
+        file_scope.pop();
+        let file_scope = file_scope
             .iter()
-            .filter_map(|s| {
-                let name = match &**s {
-                    RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.name),
-                    RSymbol::Constant(c) => Some(&c.name),
-                    _ => None,
-                };
+            .map(|s| s.as_str())
+            .chain([constant_scope.as_str()])
+            .join(parsers::SCOPE_DELIMITER);
 
-                match name {
-                    Some(n) => {
-                        let mut symbol = None;
-                        for name_to_find in &names_to_find {
-                            if n == name_to_find {
-                                symbol = Some(s.clone());
-                                break;
-                            }
-                        }
-                        symbol
+        let symbols = self.symbols.iter().filter(|s| {
+            matches!(
+                ***s,
+                RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)
+            )
+        });
+
+        if is_global {
+            info!("Global scope, searching for {constant_scope}");
+            symbols
+                .filter_map(|s| {
+                    if s.name() == constant_scope {
+                        Some(s.clone())
+                    } else {
+                        None
                     }
-                    None => None,
-                }
-            })
-            .collect();
+                })
+                .collect()
+        } else {
+            info!(
+                "Searching for {context_scope} or {file_scope} or {context_scope} in the same file"
+            );
+            // search in contexts first
+            let found_symbols: Vec<Arc<RSymbol>> = symbols
+                .clone()
+                .filter_map(|s| {
+                    let name = s.name();
 
-        symbols
+                    if name == context_scope
+                        || name == file_scope
+                        || (name == constant_scope && s.file() == file)
+                    {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // then global
+            if found_symbols.is_empty() {
+                info!("Haven't found anything, searching for global {constant_scope}");
+                symbols
+                    .clone()
+                    .filter_map(|s| {
+                        if constant_scope == s.name() {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                found_symbols
+            }
+        }
     }
 
     pub fn index(&mut self) -> Result<()> {

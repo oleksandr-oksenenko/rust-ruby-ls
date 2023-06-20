@@ -9,9 +9,11 @@ use crate::indexer_v2::{RClass, RConstant, RMethod, RMethodParam, RSymbol};
 
 pub const SCOPE_DELIMITER: &str = "::";
 
+pub const GLOBAL_SCOPE_VALUE: &str = "$GLOBAL";
+
 #[derive(PartialEq, Eq, Debug, EnumString, AsRefStr, IntoStaticStr, Display)]
 #[strum(serialize_all = "snake_case")]
-enum NodeKind {
+pub enum NodeKind {
     Class,
     Module,
     Method,
@@ -41,13 +43,14 @@ impl PartialEq<NodeKind> for &str {
 
 #[derive(PartialEq, Eq, Debug, EnumString, AsRefStr, IntoStaticStr, Display)]
 #[strum(serialize_all = "snake_case")]
-enum NodeName {
+pub enum NodeName {
     Name,
     Superclass,
     Body,
     Scope,
     Left,
     MethodParameters,
+    Reciever,
 }
 
 impl AsRef<[u8]> for NodeName {
@@ -429,7 +432,13 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
                     NodeKind::ScopeResolution => {
                         let name = s.child_by_field_name(NodeName::Name).unwrap();
                         scopes.push(name.utf8_text(source).unwrap());
-                        scope = s.child_by_field_name(NodeName::Scope);
+                        let new_scope = s.child_by_field_name(NodeName::Scope);
+
+                        if new_scope.is_none() {
+                            scopes.push(GLOBAL_SCOPE_VALUE);
+                        }
+
+                        scope = new_scope
                     }
                     NodeKind::Constant => {
                         scopes.push(s.utf8_text(source).unwrap());
@@ -507,6 +516,15 @@ pub fn get_full_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a s
  */
 pub fn get_full_and_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
     let full_scope = get_full_scope_resolution(node, source);
+
+    if full_scope
+        .first()
+        .map(|s| *s == GLOBAL_SCOPE_VALUE)
+        .unwrap_or(false)
+    {
+        return full_scope;
+    }
+
     let context_scope = get_context_scope(node, source);
 
     context_scope.into_iter().chain(full_scope).collect()
@@ -516,10 +534,7 @@ pub fn get_full_and_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a 
 mod tests {
     use tree_sitter::{Node, Parser, Point, Tree};
 
-    use super::{
-        get_child_scope_resolution, get_context_scope, get_full_and_context_scope,
-        get_full_scope_resolution, get_parent_scope_resolution,
-    };
+    use super::*;
 
     const SOURCE: &str = r#"
 class A::B < X::Y::Z
@@ -527,7 +542,8 @@ class A::B < X::Y::Z
         module E::F::G
             class H::I::J
                 CONSTANT = ""
-                ::V::C = 10
+                V::C = 10
+                include ::G::S
             end
         end
     end
@@ -550,7 +566,7 @@ end
 
         #[test]
         fn get_child_scope_resolution_test_2() {
-            let point = Point { row: 6, column: 18 };
+            let point = Point { row: 6, column: 16 };
             let expected_scopes = vec!["V", "C"];
 
             test(SOURCE, &point, &expected_scopes, |n| {
@@ -585,7 +601,7 @@ end
 
         #[test]
         fn get_parent_scope_resolution_test_2() {
-            let point = Point { row: 6, column: 21 };
+            let point = Point { row: 6, column: 19 };
             let expected_scopes = vec!["V", "C"];
 
             test(SOURCE, &point, &expected_scopes, |n| {
@@ -597,6 +613,16 @@ end
         fn get_parent_scope_resolution_test_3() {
             let point = Point { row: 1, column: 19 };
             let expected_scopes = vec!["X", "Y", "Z"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_parent_scope_resolution(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_parent_scope_resolution_test_4() {
+            let point = Point { row: 7, column: 29 };
+            let expected_scopes = vec!["$GLOBAL", "G", "S"];
 
             test(SOURCE, &point, &expected_scopes, |n| {
                 get_parent_scope_resolution(n, SOURCE.as_bytes())
@@ -732,7 +758,7 @@ end
 
         #[test]
         fn get_full_and_context_scope_test() {
-            let point = Point { row: 6, column: 18 };
+            let point = Point { row: 6, column: 16 };
             let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "V", "C"];
 
             test(SOURCE, &point, &expected_scopes, |n| {
@@ -744,6 +770,16 @@ end
         fn get_full_and_context_scope_test_2() {
             let point = Point { row: 2, column: 11 };
             let expected_scopes = vec!["A", "B", "C", "D"];
+
+            test(SOURCE, &point, &expected_scopes, |n| {
+                get_full_and_context_scope(n, SOURCE.as_bytes())
+            })
+        }
+
+        #[test]
+        fn get_full_and_context_scope_test_3() {
+            let point = Point { row: 7, column: 29 };
+            let expected_scopes = vec![GLOBAL_SCOPE_VALUE, "G", "S"];
 
             test(SOURCE, &point, &expected_scopes, |n| {
                 get_full_and_context_scope(n, SOURCE.as_bytes())
