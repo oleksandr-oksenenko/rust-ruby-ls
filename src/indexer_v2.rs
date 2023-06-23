@@ -19,7 +19,7 @@ use crate::parsers;
 use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse, parse_constant};
 use crate::progress_reporter::ProgressReporter;
 use crate::ruby_env_provider::RubyEnvProvider;
-use crate::ruby_filename_converter;
+use crate::ruby_filename_converter::{self, RubyFilenameConverter};
 use crate::symbols_matcher::SymbolsMatcher;
 
 pub enum RSymbol {
@@ -131,6 +131,7 @@ pub struct IndexerV2<'a> {
     root_dir: PathBuf,
     progress_reporter: ProgressReporter<'a>,
     ruby_env_provider: RubyEnvProvider,
+    ruby_filename_converter: RubyFilenameConverter,
     symbols: Vec<Arc<RSymbol>>,
     file_index: HashMap<PathBuf, Vec<Arc<RSymbol>>>,
 }
@@ -138,8 +139,11 @@ pub struct IndexerV2<'a> {
 impl<'a> IndexerV2<'a> {
     pub fn new(root_dir: &Path, progress_reporter: ProgressReporter<'a>) -> IndexerV2<'a> {
         let root_dir = root_dir.to_path_buf();
+        let ruby_env_provider = RubyEnvProvider::new(root_dir.clone());
+        let ruby_filename_converter = RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
         IndexerV2 {
-            ruby_env_provider: RubyEnvProvider::new(root_dir.clone()),
+            ruby_env_provider,
+            ruby_filename_converter,
             root_dir,
             progress_reporter,
             symbols: Vec::new(),
@@ -214,7 +218,7 @@ impl<'a> IndexerV2<'a> {
             .chain([constant_scope.as_str()])
             .join(parsers::SCOPE_DELIMITER);
 
-        let file_scope = ruby_filename_converter::path_to_scope(&self.root_dir, file);
+        let file_scope = self.ruby_filename_converter.path_to_scope(file);
         let mut file_scope = file_scope.unwrap_or(vec![]);
         file_scope.pop();
         let file_scope = file_scope

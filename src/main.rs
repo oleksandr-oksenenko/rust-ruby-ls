@@ -7,6 +7,7 @@ use tree_sitter::Point;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+#[macro_use]
 extern crate anyhow;
 
 use std::time::Instant;
