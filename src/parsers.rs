@@ -98,7 +98,7 @@ pub fn parse(
         }
 
         _ => {
-            // warn!( "Unknown node kind: {}", node.kind());
+            warn!( "Unknown node kind: {}", node.kind());
             vec![]
         }
     }
@@ -259,26 +259,31 @@ fn parse_assignment(
         }
 
         NodeKind::GlobalVariable => {
+            info!("Global variable assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
             // TODO: parse global variables as constants
             None
         }
 
         NodeKind::ScopeResolution => {
+            info!("Scope resolution assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
             // TODO: parse scope resolution constant assignment
             None
         }
 
         NodeKind::InstanceVariable | NodeKind::ClassVariable => {
+            info!("Instance/class variable assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
             // TODO: parse instance and class variables
             None
         }
 
         NodeKind::Identifier => {
+            info!("Identifier assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
             // TODO: variable declaration, should parse?
             None
         }
 
         NodeKind::Call => {
+            info!("Call assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
             // TODO: parse attr_accessors
             None
         }
