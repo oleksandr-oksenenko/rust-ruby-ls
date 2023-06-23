@@ -71,15 +71,20 @@ pub fn parse(
     };
 
     match node_kind {
+        NodeKind::Program => {
+            info!("empty file: {:?}", file);
+            vec![]
+        },
+
         NodeKind::Class | NodeKind::Module => parse_class(file, source, node, parent),
 
         NodeKind::Method => {
             vec![Arc::new(parse_method(file, source, node, parent))]
-        }
+        },
 
         NodeKind::SingletonMethod => {
             vec![Arc::new(parse_singleton_method(file, source, node, parent))]
-        }
+        },
 
         NodeKind::Assignment => parse_assignment(file, source, node, parent)
             .unwrap_or(Vec::new())
@@ -87,20 +92,15 @@ pub fn parse(
             .map(Arc::new)
             .collect(),
 
-        NodeKind::Program => {
-            info!("empty file: {:?}", file);
-            vec![]
-        }
-
         NodeKind::Comment | NodeKind::Call => {
             // TODO: Implement
             vec![]
-        }
+        },
 
         _ => {
-            warn!( "Unknown node kind: {}", node.kind());
+            // warn!( "Unknown node kind: {}", node.kind());
             vec![]
-        }
+        },
     }
 }
 
@@ -259,9 +259,13 @@ fn parse_assignment(
         }
 
         NodeKind::GlobalVariable => {
-            info!("Global variable assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
-            // TODO: parse global variables as constants
-            None
+            let name = lhs.utf8_text(source).unwrap().to_string();
+            Some(vec![RSymbol::GlobalVariable(crate::indexer::RVariable {
+                file: file.to_path_buf(),
+                name,
+                location: node.start_position(),
+                parent: None
+            })])
         }
 
         NodeKind::ScopeResolution => {

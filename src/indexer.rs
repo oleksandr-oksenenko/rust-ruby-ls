@@ -11,7 +11,7 @@ use anyhow::Result;
 use itertools::Itertools;
 use log::{error, info, warn};
 use rayon::prelude::*;
-use tree_sitter::{Parser, Point, Tree};
+use tree_sitter::{Parser, Point, Tree, Node};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
@@ -30,6 +30,7 @@ pub enum RSymbol {
     SingletonMethod(RMethod),
     Constant(RConstant),
     Variable(RVariable),
+    GlobalVariable(RVariable),
     ClassVariable(RVariable),
 }
 
@@ -42,6 +43,7 @@ impl RSymbol {
             RSymbol::SingletonMethod(method) => &method.name,
             RSymbol::Constant(constant) => &constant.name,
             RSymbol::Variable(variable) => &variable.name,
+            RSymbol::GlobalVariable(variable) => &variable.name,
             RSymbol::ClassVariable(variable) => &variable.name,
         }
     }
@@ -54,6 +56,7 @@ impl RSymbol {
             RSymbol::SingletonMethod(method) => &method.file,
             RSymbol::Constant(constant) => &constant.file,
             RSymbol::Variable(variable) => &variable.file,
+            RSymbol::GlobalVariable(variable) => &variable.file,
             RSymbol::ClassVariable(v) => &v.file,
         }
     }
@@ -66,6 +69,7 @@ impl RSymbol {
             RSymbol::SingletonMethod(method) => &method.location,
             RSymbol::Constant(constant) => &constant.location,
             RSymbol::Variable(variable) => &variable.location,
+            RSymbol::GlobalVariable(variable) => &variable.location,
             RSymbol::ClassVariable(variable) => &variable.location,
         }
     }
@@ -183,25 +187,51 @@ impl<'a> Indexer<'a> {
             Some(n) => n,
         };
 
-        let node = match node.kind().try_into() {
+        let node_kind = match node.kind().try_into() {
             Err(_) => {
                 error!("Unknown node kind in find definition: {}", node.kind());
                 return vec![];
             }
-            Ok(nk) => match nk {
-                parsers::NodeKind::Constant => node,
-                parsers::NodeKind::Call => node
-                    .child_by_field_name(parsers::NodeName::Reciever)
-                    .unwrap(),
-                _ => {
-                    warn!("Find definition of {} node is not supported", node.kind());
-                    return vec![];
-                }
-            },
+            Ok(nk) => nk
         };
 
+        match node_kind {
+            parsers::NodeKind::Constant => self.find_constant(&node, file, &ctx.source),
+            parsers::NodeKind::Call => {
+                let node = node.child_by_field_name(parsers::NodeName::Reciever).unwrap();
+                self.find_constant(&node, file, &ctx.source)
+            },
+            parsers::NodeKind::GlobalVariable => self.find_global_variable(&node, &ctx.source),
+            _ => {
+                warn!("Find definition of {} node is not supported", node.kind());
+                vec![]
+            },
+        }
+    }
+
+    fn find_global_variable(&self, node: &Node, source: &[u8]) -> Vec<Arc<RSymbol>> {
+        let node_kind: parsers::NodeKind = node.kind().try_into().unwrap();
+        assert!(node_kind == parsers::NodeKind::GlobalVariable);
+
+        let name = node.utf8_text(source).unwrap();
+
+        self.symbols.iter()
+            .filter_map(|s| {
+                let global_var = matches!(**s, RSymbol::GlobalVariable(_));
+                let name_equals = s.name() == name;
+
+                if global_var && name_equals {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+        .collect()
+    }
+
+    fn find_constant(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbol>> {
         // traverse down till we hit the whole symbol name
-        let constant_scope = get_parent_scope_resolution(&node, &ctx.source);
+        let constant_scope = get_parent_scope_resolution(node, source);
         let is_global = constant_scope
             .first()
             .map(|s| *s == parsers::GLOBAL_SCOPE_VALUE)
@@ -215,7 +245,7 @@ impl<'a> Indexer<'a> {
             constant_scope.into_iter().join(parsers::SCOPE_DELIMITER)
         };
 
-        let context_scope = get_context_scope(&node, &ctx.source)
+        let context_scope = get_context_scope(node, source)
             .into_iter()
             .chain([constant_scope.as_str()])
             .join(parsers::SCOPE_DELIMITER);
