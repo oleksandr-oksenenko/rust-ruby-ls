@@ -277,6 +277,7 @@ fn convert_to_lsp_sym_info(rsymbol: impl AsRef<RSymbol>) -> SymbolInformation {
         _ => SymbolKind::NULL,
     };
 
+    #[allow(deprecated)]
     SymbolInformation {
         name: name.to_string(),
         kind,

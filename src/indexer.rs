@@ -11,17 +11,18 @@ use anyhow::Result;
 use itertools::Itertools;
 use log::{error, info, warn};
 use rayon::prelude::*;
-use tree_sitter::{Node, Parser, Point, Tree};
+use tree_sitter::{Parser, Point, Tree};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
 use crate::parsers;
-use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse, parse_constant};
+use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse};
 use crate::progress_reporter::ProgressReporter;
 use crate::ruby_env_provider::RubyEnvProvider;
-use crate::ruby_filename_converter::{self, RubyFilenameConverter};
+use crate::ruby_filename_converter::RubyFilenameConverter;
 use crate::symbols_matcher::SymbolsMatcher;
 
+#[allow(dead_code)]
 pub enum RSymbol {
     Class(RClass),
     Module(RClass),
@@ -140,7 +141,8 @@ impl<'a> Indexer<'a> {
     pub fn new(root_dir: &Path, progress_reporter: ProgressReporter<'a>) -> Indexer<'a> {
         let root_dir = root_dir.to_path_buf();
         let ruby_env_provider = RubyEnvProvider::new(root_dir.clone());
-        let ruby_filename_converter = RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
+        let ruby_filename_converter =
+            RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
         Indexer {
             ruby_env_provider,
             ruby_filename_converter,

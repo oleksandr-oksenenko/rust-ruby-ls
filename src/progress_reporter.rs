@@ -12,6 +12,7 @@ pub struct ProgressReporter<'a> {
     token_counter: Cell<i32>,
 }
 
+#[allow(dead_code)]
 impl<'a> ProgressReporter<'a> {
     pub fn new(sender: &Sender<Message>) -> ProgressReporter {
         ProgressReporter {
