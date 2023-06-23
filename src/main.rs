@@ -21,14 +21,14 @@ use lsp_types::{
     SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams, GotoDefinitionResponse,
 };
 
-mod indexer_v2;
+mod indexer;
 mod ruby_env_provider;
 mod parsers;
 mod symbols_matcher;
 mod progress_reporter;
 mod ruby_filename_converter;
 
-use indexer_v2::*;
+use indexer::*;
 use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
@@ -76,7 +76,7 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     let path = params.root_uri.unwrap().to_file_path().unwrap();
 
     let progess_reporter = ProgressReporter::new(&connection.sender);
-    let mut indexer = IndexerV2::new(path.as_path(), progess_reporter);
+    let mut indexer = Indexer::new(path.as_path(), progess_reporter);
     indexer.index()?;
 
     for msg in &connection.receiver {
@@ -148,7 +148,7 @@ where
 }
 
 fn handle_document_symbols_request(
-    indexer: &IndexerV2,
+    indexer: &Indexer,
     id: RequestId,
     params: lsp_types::DocumentSymbolParams,
     connection: &Connection,
@@ -180,7 +180,7 @@ fn handle_document_symbols_request(
 }
 
 fn handle_workspace_symbols_request(
-    indexer_v2: &IndexerV2,
+    indexer_v2: &Indexer,
     id: RequestId,
     params: WorkspaceSymbolParams,
     connection: &Connection,
@@ -211,7 +211,7 @@ fn handle_workspace_symbols_request(
 }
 
 fn handle_goto_definition_request(
-    indexer: &IndexerV2,
+    indexer: &Indexer,
     id: RequestId,
     params: GotoDefinitionParams,
     connection: &Connection,

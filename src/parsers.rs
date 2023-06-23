@@ -5,7 +5,7 @@ use log::{error, info, warn};
 use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 use tree_sitter::Node;
 
-use crate::indexer_v2::{RClass, RConstant, RMethod, RMethodParam, RSymbol};
+use crate::indexer::{RClass, RConstant, RMethod, RMethodParam, RSymbol};
 
 pub const SCOPE_DELIMITER: &str = "::";
 

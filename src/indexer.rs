@@ -1,367 +1,365 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 
 use itertools::Itertools;
-
+use log::{error, info, warn};
+use rayon::prelude::*;
+use tree_sitter::{Node, Parser, Point, Tree};
+use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
-use rayon::prelude::*;
-
-use tree_sitter::*;
-
-use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
-
+use crate::parsers;
+use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse, parse_constant};
 use crate::progress_reporter::ProgressReporter;
+use crate::ruby_env_provider::RubyEnvProvider;
+use crate::ruby_filename_converter::{self, RubyFilenameConverter};
+use crate::symbols_matcher::SymbolsMatcher;
 
-pub struct Method {
-    name: String,
-    params_count: u8,
-    location: Point,
+pub enum RSymbol {
+    Class(RClass),
+    Module(RClass),
+    Method(RMethod),
+    SingletonMethod(RMethod),
+    Constant(RConstant),
+    Variable(RVariable),
+    ClassVariable(RVariable),
 }
 
-pub struct Class {
-    name: String,
-    scopes: Vec<String>,
-    superclass: Option<Box<Class>>,
-    path: Option<PathBuf>,
-    location: Option<Point>,
-    methods: Vec<Method>,
-    singleton_methods: Vec<Method>,
+impl RSymbol {
+    pub fn name(&self) -> &str {
+        match self {
+            RSymbol::Class(class) => &class.name,
+            RSymbol::Module(module) => &module.name,
+            RSymbol::Method(method) => &method.name,
+            RSymbol::SingletonMethod(method) => &method.name,
+            RSymbol::Constant(constant) => &constant.name,
+            RSymbol::Variable(variable) => &variable.name,
+            RSymbol::ClassVariable(variable) => &variable.name,
+        }
+    }
+
+    pub fn file(&self) -> &Path {
+        match self {
+            RSymbol::Class(class) => &class.file,
+            RSymbol::Module(module) => &module.file,
+            RSymbol::Method(method) => &method.file,
+            RSymbol::SingletonMethod(method) => &method.file,
+            RSymbol::Constant(constant) => &constant.file,
+            RSymbol::Variable(variable) => &variable.file,
+            RSymbol::ClassVariable(v) => &v.file,
+        }
+    }
+
+    pub fn location(&self) -> &Point {
+        match self {
+            RSymbol::Class(class) => &class.location,
+            RSymbol::Module(module) => &module.location,
+            RSymbol::Method(method) => &method.location,
+            RSymbol::SingletonMethod(method) => &method.location,
+            RSymbol::Constant(constant) => &constant.location,
+            RSymbol::Variable(variable) => &variable.location,
+            RSymbol::ClassVariable(variable) => &variable.location,
+        }
+    }
+}
+
+pub struct RClass {
+    pub file: PathBuf,
+    pub name: String,
+    pub location: Point,
+    pub scopes: Vec<String>,
+    pub superclass_scopes: Vec<String>,
+    pub parent: Option<Arc<RSymbol>>,
+}
+
+pub struct RMethod {
+    pub file: PathBuf,
+    pub name: String,
+    pub location: Point,
+    pub parameters: Vec<RMethodParam>,
+    pub parent: Option<Arc<RSymbol>>,
+}
+
+pub enum RMethodParam {
+    Regular(String),
+    Optional(String),
+    Keyword(String),
+}
+
+pub struct RConstant {
+    pub file: PathBuf,
+    pub name: String,
+    pub location: Point,
+    pub parent: Option<Arc<RSymbol>>,
+}
+
+pub struct RVariable {
+    pub file: PathBuf,
+    pub name: String,
+    pub location: Point,
+    pub parent: Option<Arc<RSymbol>>,
+}
+
+struct IndexingContext {
+    source: Vec<u8>,
+    tree: Tree,
+}
+
+impl IndexingContext {
+    pub fn new(file_path: &Path) -> Result<IndexingContext> {
+        let source = fs::read(file_path)?;
+
+        let mut parser = Parser::new();
+        parser.set_language(language())?;
+        let parsed = parser.parse(&source[..], None).unwrap();
+
+        Ok(IndexingContext {
+            source,
+            tree: parsed,
+        })
+    }
 }
 
 pub struct Indexer<'a> {
-    pub root_path: PathBuf,
-    pub classes: Vec<Class>,
-
-    pub symbols: Vec<SymbolInformation>,
-
+    root_dir: PathBuf,
     progress_reporter: ProgressReporter<'a>,
-
-    language: Language,
-    class_query: Query,
-    method_query: Query,
-    singleton_method_query: Query,
+    ruby_env_provider: RubyEnvProvider,
+    ruby_filename_converter: RubyFilenameConverter,
+    symbols: Vec<Arc<RSymbol>>,
+    file_index: HashMap<PathBuf, Vec<Arc<RSymbol>>>,
 }
 
 impl<'a> Indexer<'a> {
-    pub fn index_folder(folder: &Path, progress_reporter: ProgressReporter<'a>) -> Result<Indexer<'a>> {
-        let start = Instant::now();
-        eprintln!("Started indexing");
-
-        let ruby_version_file = folder.join(".ruby-version");
-        let ruby_version = if ruby_version_file.exists() {
-            Some(fs::read_to_string(ruby_version_file)?.trim().to_owned())
-        } else {
-            None
-        };
-
-        let gemset_file = folder.join(".ruby-gemset");
-        let gemset = if gemset_file.exists() {
-            Some(fs::read_to_string(gemset_file)?.trim().to_owned())
-        } else {
-            None
-        };
-
-        let mut indexer = Indexer::new(folder, progress_reporter)?;
-
-        let stub_dir = Self::choose_stubs_dir(&ruby_version);
-        let gems_dir = Self::choose_gems_dir(&ruby_version, &gemset);
-
-        for dir in [stub_dir, gems_dir, Some(folder.to_path_buf())].into_iter().flatten() {
-            let mut classes = indexer.recursively_index_folder(dir.as_path())?;
-            indexer.classes.append(&mut classes);
-        }
-
-        indexer.convert_to_symbol_info()?;
-
-        eprintln!("Indexing done in {:?}", start.elapsed());
-
-        Ok(indexer)
-    }
-
-    pub fn new(root_path: &Path, progress_reporter: ProgressReporter<'a>) -> Result<Indexer<'a>> {
-        let language = tree_sitter_ruby::language();
-        let class_query = Self::create_query(
-            r#"(class
-                name: [(constant) (scope_resolution)] @class_name
-                superclass: [(constant) (scope_resolution)]? @superclass_name)"#,
-        )?;
-        let method_query = Self::create_query(
-            r#"(method
-            name: (identifier) @method_name
-            parameters: (method_parameters
-                            (identifier) @method_parameter)?)"#,
-        )?;
-        let singleton_method_query = Self::create_query(
-            r#"(singleton_method
-            name: (identifier) @method_name
-            parameters: (method_parameters
-                         (identifier) @method_parameters)?)"#,
-        )?;
-
-        let mut parser = Parser::new();
-        parser.set_language(language).unwrap();
-
-        Ok(Indexer {
-            root_path: root_path.to_path_buf(),
-            classes: Vec::new(),
-            symbols: Vec::new(),
+    pub fn new(root_dir: &Path, progress_reporter: ProgressReporter<'a>) -> Indexer<'a> {
+        let root_dir = root_dir.to_path_buf();
+        let ruby_env_provider = RubyEnvProvider::new(root_dir.clone());
+        let ruby_filename_converter = RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
+        Indexer {
+            ruby_env_provider,
+            ruby_filename_converter,
+            root_dir,
             progress_reporter,
-            class_query,
-            method_query,
-            singleton_method_query,
-            language,
-        })
-    }
-
-    fn choose_stubs_dir(ruby_version: &Option<String>) -> Option<PathBuf> {
-        let ruby_version = match ruby_version {
-            None => return None,
-            Some(version) => version,
-        };
-
-        let segments = ruby_version.split('.').collect_vec();
-        let major = segments[0];
-        let minor = segments[1];
-
-        let path = "/Users/oleksandr.oksenenko/code/rust-ruby-ls/stubs/rubystubs".to_owned()
-            + major
-            + minor;
-
-        Some(PathBuf::from(path))
-    }
-
-    fn choose_gems_dir(ruby_version: &Option<String>, gemset: &Option<String>) -> Option<PathBuf> {
-        let ruby_version = match ruby_version {
-            None => return None,
-            Some(version) => version,
-        };
-
-        let path = "/Users/oleksandr.oksenenko/.rvm/gems/ruby-".to_owned() + ruby_version;
-        match gemset {
-            None => Some(PathBuf::from(path)),
-            Some(gemset) => Some(PathBuf::from(path + "@" + gemset)),
+            symbols: Vec::new(),
+            file_index: HashMap::new(),
         }
     }
 
-    fn create_query(q: &str) -> Result<Query> {
-        let language = tree_sitter_ruby::language();
-        Ok(Query::new(language, q)?)
+    pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Arc<RSymbol>> {
+        let start = Instant::now();
+        let result = if query.is_empty() {
+            // optimization to not overload telescope on request without a query
+            vec![]
+        } else {
+            SymbolsMatcher::new(self.root_dir.as_path()).match_rsymbols(query, &self.symbols)
+        };
+
+        info!("Finding symbol by {} took {:?}", query, start.elapsed());
+
+        result
     }
 
-    pub fn recursively_index_folder(&mut self, folder: &Path) -> Result<Vec<Class>> {
-        let progress_token = self.progress_reporter.send_progress_begin(format!("Indexing {:?}", folder), "", 0)?;
+    pub fn file_symbols(&self, file: &Path) -> Option<&Vec<Arc<RSymbol>>> {
+        self.file_index.get(file)
+    }
 
-        let class_query = &self.class_query;
-        let method_query = &self.method_query;
-        let singleton_method_query = &self.singleton_method_query;
+    pub fn find_definition(&self, file: &Path, position: Point) -> Vec<Arc<RSymbol>> {
+        let ctx = IndexingContext::new(file).unwrap();
 
-        let classes: Vec<Class> = WalkDir::new(folder)
+        let node = ctx.tree.root_node();
+        let node = match node.descendant_for_point_range(position, position) {
+            None => {
+                info!("No node found to determine definition");
+                return vec![];
+            }
+            Some(n) => n,
+        };
+
+        let node = match node.kind().try_into() {
+            Err(_) => {
+                error!("Unknown node kind in find definition: {}", node.kind());
+                return vec![];
+            }
+            Ok(nk) => match nk {
+                parsers::NodeKind::Constant => node,
+                parsers::NodeKind::Call => node
+                    .child_by_field_name(parsers::NodeName::Reciever)
+                    .unwrap(),
+                _ => {
+                    warn!("Find definition of {} node is not supported", node.kind());
+                    return vec![];
+                }
+            },
+        };
+
+        // traverse down till we hit the whole symbol name
+        let constant_scope = get_parent_scope_resolution(&node, &ctx.source);
+        let is_global = constant_scope
+            .first()
+            .map(|s| *s == parsers::GLOBAL_SCOPE_VALUE)
+            .unwrap_or(false);
+        let constant_scope = if is_global {
+            constant_scope
+                .into_iter()
+                .skip(1)
+                .join(parsers::SCOPE_DELIMITER)
+        } else {
+            constant_scope.into_iter().join(parsers::SCOPE_DELIMITER)
+        };
+
+        let context_scope = get_context_scope(&node, &ctx.source)
+            .into_iter()
+            .chain([constant_scope.as_str()])
+            .join(parsers::SCOPE_DELIMITER);
+
+        let file_scope = self.ruby_filename_converter.path_to_scope(file);
+        let mut file_scope = file_scope.unwrap_or(vec![]);
+        file_scope.pop();
+        let file_scope = file_scope
+            .iter()
+            .map(|s| s.as_str())
+            .chain([constant_scope.as_str()])
+            .join(parsers::SCOPE_DELIMITER);
+
+        let symbols = self.symbols.iter().filter(|s| {
+            matches!(
+                ***s,
+                RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)
+            )
+        });
+
+        if is_global {
+            info!("Global scope, searching for {constant_scope}");
+            symbols
+                .filter_map(|s| {
+                    if s.name() == constant_scope {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            info!(
+                "Searching for {context_scope} or {file_scope} or {context_scope} in the same file"
+            );
+            // search in contexts first
+            let found_symbols: Vec<Arc<RSymbol>> = symbols
+                .clone()
+                .filter_map(|s| {
+                    let name = s.name();
+
+                    if name == context_scope
+                        || name == file_scope
+                        || (name == constant_scope && s.file() == file)
+                    {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // then global
+            if found_symbols.is_empty() {
+                info!("Haven't found anything, searching for global {constant_scope}");
+                symbols
+                    .clone()
+                    .filter_map(|s| {
+                        if constant_scope == s.name() {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                found_symbols
+            }
+        }
+    }
+
+    pub fn index(&mut self) -> Result<()> {
+        let start = Instant::now();
+        let stubs_dir = self.ruby_env_provider.stubs_dir()?;
+        let gems_dir = self.ruby_env_provider.gems_dir()?;
+
+        let symbols = [stubs_dir.as_ref(), gems_dir.as_ref(), Some(&self.root_dir)]
+            .into_iter()
+            .flatten()
+            .flat_map(|d| self.index_dir(d))
+            .flatten()
+            .collect::<Vec<Arc<RSymbol>>>();
+
+        self.symbols = symbols;
+        self.build_file_index();
+
+        info!(
+            "Found {} symbols, took {:?}",
+            self.symbols.len(),
+            start.elapsed()
+        );
+
+        Ok(())
+    }
+
+    fn build_file_index(&mut self) {
+        self.file_index = self
+            .symbols
+            .iter()
+            .group_by(|s| s.file().to_path_buf())
+            .into_iter()
+            .map(|(k, v)| (k, v.cloned().collect()))
+            .collect();
+    }
+
+    fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {
+        let progress_token =
+            self.progress_reporter
+                .send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
+
+        let classes: Vec<Arc<RSymbol>> = WalkDir::new(dir)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| !e.file_type().is_dir())
             .filter(|e| "rb" == e.path().extension().and_then(OsStr::to_str).unwrap_or(""))
-            .flat_map(|entry| {
-                Self::index_file(
-                    self.language,
-                    class_query,
-                    method_query,
-                    singleton_method_query,
-                    entry.path().to_path_buf(),
-                )
-                .unwrap()
-            })
+            .flat_map(|entry| Self::index_file_cursor(entry.into_path()).unwrap())
             .collect();
 
-        self.progress_reporter.send_progress_end(progress_token, format!("Indexing of {folder:?}"))?;
+        self.progress_reporter
+            .send_progress_end(progress_token, format!("Indexing of {dir:?}"))?;
 
         Ok(classes)
     }
 
-    fn convert_to_symbol_info(&mut self) -> Result<()> {
-        let progress_token = self.progress_reporter.send_progress_begin("Converting to symbols", "", 0)?;
+    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbol>>> {
+        let ctx = IndexingContext::new(path.as_path())?;
 
-        self.symbols = self.classes
-            .par_iter()
-            .map(Self::convert_class_to_symbol)
-            .collect::<Vec<SymbolInformation>>();
+        let mut result: Vec<Arc<RSymbol>> = Vec::new();
+        let mut cursor = ctx.tree.walk();
+        loop {
+            let node = cursor.node();
+            let source = &ctx.source[..];
 
-        self.progress_reporter.send_progress_end(progress_token, "Converting to sybmols")?;
-
-        Ok(())
-    }
-
-    fn convert_class_to_symbol(class: &Class) -> SymbolInformation {
-        let path = class.path.as_ref().unwrap();
-        let file_path_str = path.to_str().unwrap();
-        let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
-
-        let location = class.location.unwrap();
-        let line: u32 = location.row.try_into().unwrap();
-        let character: u32 = location.column.try_into().unwrap();
-
-        let class_name_len: u32 = class.name.len().try_into().unwrap();
-
-        let range = Range {
-            start: Position::new(line, character),
-            end: Position::new(line, character + class_name_len),
-        };
-
-        let container_name = if class.scopes.is_empty() {
-            None
-        } else {
-            class.scopes.last().cloned()
-        };
-        let all_scopes = class.scopes.iter().join("::");
-        let name = if all_scopes.is_empty() {
-            class.name.clone()
-        } else {
-            class.scopes.iter().join("::") + "::" + &class.name
-        };
-
-        SymbolInformation {
-            name,
-            kind: SymbolKind::CLASS,
-            tags: None,
-            deprecated: None,
-            location: Location { uri: url, range },
-            container_name
-        }
-    }
-
-    pub fn index_file(
-        language: Language,
-        class_query: &Query,
-        method_query: &Query,
-        singleton_method_query: &Query,
-        file: PathBuf,
-    ) -> Result<Vec<Class>> {
-        let mut parser = Parser::new();
-        parser.set_language(language).unwrap();
-
-        let source = &fs::read(&file)?[..];
-
-        let parsed = parser.parse(source, None).unwrap();
-
-        let mut query_cursor = QueryCursor::new();
-
-        let mut classes = Vec::new();
-        for query_match in query_cursor.matches(class_query, parsed.root_node(), source) {
-            if query_match.captures.is_empty() {
-                return Err(anyhow!("No matches found in {file:?}"));
+            if node.kind() == "program" {
+                cursor.goto_first_child();
             }
 
-            let class_name_node = query_match.captures[0].node;
-            let class_scopes = Self::get_scopes(&class_name_node, source)?;
+            let mut parsed = parse(path.as_path(), source, cursor.node(), None);
+            result.append(&mut parsed);
 
-            let class_location = class_name_node.start_position();
-
-            let methods =
-                Self::get_methods(class_name_node.parent().unwrap(), method_query, source)?;
-
-            let superclass = if query_match.captures.len() > 1 {
-                let superclass_name_node = query_match.captures[1].node;
-                let superclass_scopes = Self::get_scopes(&superclass_name_node, source)?;
-
-                let mut iter = superclass_scopes.into_iter().rev();
-                let name = iter.next().unwrap();
-                let scopes = iter.rev().collect_vec();
-                Some(Box::new(Class {
-                    name,
-                    scopes,
-                    superclass: None,
-                    path: None,
-                    location: None,
-                    methods: Vec::new(),
-                    singleton_methods: Vec::new(),
-                }))
-            } else {
-                None
-            };
-
-            let mut iter = class_scopes.into_iter().rev();
-            let name = iter.next().unwrap();
-            let scopes = iter.rev().collect_vec();
-            let class = Class {
-                name,
-                scopes,
-                superclass,
-                path: Some(file.to_owned()),
-                location: Some(class_location),
-                methods,
-                singleton_methods: Vec::new(),
-            };
-
-            classes.push(class);
-        }
-
-        Ok(classes)
-    }
-
-    fn get_scopes(main_node: &Node, source: &[u8]) -> Result<Vec<String>> {
-        let mut scopes = Vec::new();
-
-        if main_node.kind() == "scope_resolution" {
-            let mut node = *main_node;
-            while node.kind() == "scope_resolution" {
-                let name_node = node.child_by_field_name("name").unwrap();
-                let name = name_node.utf8_text(source)?.to_owned();
-                scopes.push(name);
-
-                let child = node.child_by_field_name("scope");
-                match child {
-                    None => break,
-                    Some(n) => node = n,
-                }
-            }
-            if node.kind() == "constant" {
-                let name = node.utf8_text(source)?.to_owned();
-                scopes.push(name);
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
-        if main_node.kind() == "constant" {
-            let name = main_node.utf8_text(source)?.to_owned();
-            scopes.push(name);
-        }
 
-        let class_node = main_node.parent();
-        let mut class_parent_node = class_node.and_then(|p| p.parent());
-        while let Some(parent) = class_parent_node {
-            if parent.kind() == "class" || parent.kind() == "module" {
-                let parent_class_name = parent.child_by_field_name("name").unwrap();
-                let scope = parent_class_name.utf8_text(source)?.to_owned();
-                scopes.push(scope);
-            }
-            class_parent_node = parent.parent();
-        }
-        scopes.reverse();
-
-        Ok(scopes)
-    }
-
-    fn get_methods(class_node: Node, method_query: &Query, source: &[u8]) -> Result<Vec<Method>> {
-        let mut methods: Vec<Method> = Vec::new();
-
-        let mut query_cursor = QueryCursor::new();
-
-        for query_match in query_cursor.matches(method_query, class_node, source) {
-            let method = query_match.captures.first().unwrap();
-            let method_name = method.node.utf8_text(source)?.to_owned();
-            let method_location = method.node.start_position();
-
-            let params_count = query_match.captures.iter().skip(1).count();
-            methods.push(Method {
-                name: method_name,
-                params_count: params_count.try_into()?,
-                location: method_location,
-            });
-        }
-
-        Ok(methods)
+        Ok(result)
     }
 }

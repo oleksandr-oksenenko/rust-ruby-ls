@@ -9,7 +9,7 @@ use lsp_types::SymbolInformation;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::indexer_v2::RSymbol;
+use crate::indexer::RSymbol;
 
 pub struct SymbolsMatcher<'a> {
     matcher: SkimMatcherV2,
