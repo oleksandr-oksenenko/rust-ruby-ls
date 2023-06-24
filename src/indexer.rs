@@ -23,6 +23,7 @@ use crate::ruby_filename_converter::RubyFilenameConverter;
 use crate::symbols_matcher::SymbolsMatcher;
 
 #[allow(dead_code)]
+#[derive(PartialEq, Eq)]
 pub enum RSymbol {
     Class(RClass),
     Module(RClass),
@@ -35,6 +36,19 @@ pub enum RSymbol {
 }
 
 impl RSymbol {
+    pub fn kind(&self) -> &str {
+        match self {
+            RSymbol::Class(_) => "class",
+            RSymbol::Module(_) => "module",
+            RSymbol::Method(_) => "method",
+            RSymbol::SingletonMethod(_) => "singleton_method",
+            RSymbol::Constant(_) => "constant",
+            RSymbol::Variable(_) => "variable",
+            RSymbol::GlobalVariable(_) => "global_variable",
+            RSymbol::ClassVariable(_) => "class_variable",
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             RSymbol::Class(class) => &class.name,
@@ -73,8 +87,29 @@ impl RSymbol {
             RSymbol::ClassVariable(variable) => &variable.location,
         }
     }
+
+    pub fn parent(&self) -> &Option<Arc<RSymbol>> {
+        match self {
+            RSymbol::Class(s) => &s.parent,
+            RSymbol::Module(s) => &s.parent,
+            RSymbol::Method(s) => &s.parent,
+            RSymbol::SingletonMethod(s) => &s.parent,
+            RSymbol::Constant(s) => &s.parent,
+            RSymbol::Variable(s) => &s.parent,
+            RSymbol::GlobalVariable(s) => &s.parent,
+            RSymbol::ClassVariable(s) => &s.parent,
+        }
+    }
 }
 
+impl std::fmt::Debug for RSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} in {:?} at {:?}, name = {}, parent = {:?}", 
+               self.kind(), self.file(), self.location(), self.name(), self.parent())
+    }
+}
+
+#[derive(PartialEq, Eq)]
 pub struct RClass {
     pub file: PathBuf,
     pub name: String,
@@ -84,6 +119,7 @@ pub struct RClass {
     pub parent: Option<Arc<RSymbol>>,
 }
 
+#[derive(PartialEq, Eq)]
 pub struct RMethod {
     pub file: PathBuf,
     pub name: String,
@@ -92,12 +128,14 @@ pub struct RMethod {
     pub parent: Option<Arc<RSymbol>>,
 }
 
+#[derive(PartialEq, Eq)]
 pub enum RMethodParam {
     Regular(String),
     Optional(String),
     Keyword(String),
 }
 
+#[derive(PartialEq, Eq)]
 pub struct RConstant {
     pub file: PathBuf,
     pub name: String,
@@ -105,6 +143,7 @@ pub struct RConstant {
     pub parent: Option<Arc<RSymbol>>,
 }
 
+#[derive(PartialEq, Eq)]
 pub struct RVariable {
     pub file: PathBuf,
     pub name: String,
@@ -197,10 +236,7 @@ impl<'a> Indexer<'a> {
 
         match node_kind {
             parsers::NodeKind::Constant => self.find_constant(&node, file, &ctx.source),
-            parsers::NodeKind::Call => {
-                let node = node.child_by_field_name(parsers::NodeName::Reciever).unwrap();
-                self.find_constant(&node, file, &ctx.source)
-            },
+            parsers::NodeKind::Identifier => self.find_identifier(&node, file, &ctx.source),
             parsers::NodeKind::GlobalVariable => self.find_global_variable(&node, &ctx.source),
             _ => {
                 warn!("Find definition of {} node is not supported", node.kind());
@@ -209,7 +245,88 @@ impl<'a> Indexer<'a> {
         }
     }
 
+    fn find_identifier(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbol>> {
+        info!("Trying to find an identifier");
+        let identifier = node.utf8_text(source).unwrap();
+
+        let parent = match node.parent() {
+            None => {
+                warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
+                return vec![]
+            },
+            Some(p) => p
+        };
+        let parent_node_kind = match parent.kind().try_into() {
+            Err(_) => {
+                warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
+                return vec![]
+            },
+            Ok(k) => k
+        };
+
+        match parent_node_kind {
+            parsers::NodeKind::Call => {
+                let receiver = parent.child_by_field_name(parsers::NodeName::Receiver);
+                let is_receiver = receiver.map(|n| n.range() == node.range()).unwrap_or(false);
+
+                let method = parent.child_by_field_name(parsers::NodeName::Method);
+                let is_method = method.map(|n| n.range() == node.range()).unwrap_or(false);
+
+                if !is_receiver && !is_method {
+                    warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
+                    vec![]
+                } else if is_method {
+                    self.find_method(identifier, file, receiver)
+                } else if is_receiver {
+                    // TODO: handle receiver
+                    warn!("Searching for recievers is not implemented");
+                    vec![]
+                } else {
+                    unreachable!()
+                }
+            },
+
+            _ => {
+                warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
+                vec![]
+            }
+        }
+    }
+
+    fn find_method(&self, method_name: &str, file: &Path, receiver: Option<Node>) -> Vec<Arc<RSymbol>> {
+        let receiver_kind = receiver.map(|n| n.kind());
+        info!("Trying to find method: {method_name}, receiver kind = {receiver_kind:?}");
+
+        let receiver_definitions = receiver.map(|r| self.find_definition(file, r.start_position()));
+
+        self.symbols.iter()
+            // TODO: depends on the type of receiver, change after adding more definition types
+            .filter(|s| matches!(***s, RSymbol::SingletonMethod(_)))
+            .filter(|s| {
+                let receiver_definitions = match &receiver_definitions {
+                    None => return true,
+                    Some(rd) => rd
+                };
+                let parent = match s.parent() {
+                    None => return true,
+                    Some(p) => p
+                };
+                if receiver_definitions.is_empty() {
+                    info!("Reciever definitions are empty");
+                    return true;
+                }
+                receiver_definitions.contains(parent)
+            })
+            .filter(|s| {
+                let last_scope = s.name().split("::").last().unwrap();
+                method_name == last_scope
+            })
+            .cloned()
+            .collect()
+    }
+
     fn find_global_variable(&self, node: &Node, source: &[u8]) -> Vec<Arc<RSymbol>> {
+        info!("Trying to find a global variable");
         let node_kind: parsers::NodeKind = node.kind().try_into().unwrap();
         assert!(node_kind == parsers::NodeKind::GlobalVariable);
 
@@ -230,6 +347,7 @@ impl<'a> Indexer<'a> {
     }
 
     fn find_constant(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbol>> {
+        info!("Trying to find a constant");
         // traverse down till we hit the whole symbol name
         let constant_scope = get_parent_scope_resolution(node, source);
         let is_global = constant_scope

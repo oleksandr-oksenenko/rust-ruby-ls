@@ -80,16 +80,12 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
     indexer.index()?;
 
     for msg in &connection.receiver {
-        info!("got msg: {msg:?}");
-
         match msg {
             Message::Request(req) => {
                 use lsp_types::request::Request;
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-
-                info!("got request: {req:?}");
 
                 match req.method.as_str() {
                     WorkspaceSymbolRequest::METHOD => match cast::<WorkspaceSymbolRequest>(req) {

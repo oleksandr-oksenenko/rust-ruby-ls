@@ -50,7 +50,8 @@ pub enum NodeName {
     Scope,
     Left,
     MethodParameters,
-    Reciever,
+    Receiver,
+    Method
 }
 
 impl AsRef<[u8]> for NodeName {
