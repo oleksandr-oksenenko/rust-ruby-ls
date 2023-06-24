@@ -1,4 +1,4 @@
-use std::{time::Instant, cell::Cell};
+use std::{cell::Cell, time::Instant};
 
 use anyhow::Result;
 
@@ -17,7 +17,7 @@ impl<'a> ProgressReporter<'a> {
     pub fn new(sender: &Sender<Message>) -> ProgressReporter {
         ProgressReporter {
             sender,
-            token_counter: Cell::new(0)
+            token_counter: Cell::new(0),
         }
     }
 

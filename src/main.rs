@@ -17,25 +17,23 @@ use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::{
     request::{DocumentSymbolRequest, GotoDefinition, WorkspaceSymbolRequest},
-    GotoDefinitionParams, InitializeParams, Location, OneOf, Position, Range, ServerCapabilities,
-    SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams, GotoDefinitionResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, Location, OneOf, Position, Range,
+    ServerCapabilities, SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams,
 };
 
 mod indexer;
-mod ruby_env_provider;
 mod parsers;
-mod symbols_matcher;
 mod progress_reporter;
+mod ruby_env_provider;
 mod ruby_filename_converter;
+mod symbols_matcher;
 
 use indexer::*;
 use progress_reporter::ProgressReporter;
 
 fn main() -> Result<()> {
     let file = log4rs::append::file::FileAppender::builder()
-        .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
-            "{d} - {m}{n}",
-        )))
+        .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new("{d} - {m}{n}")))
         .build("/Users/oleksandr.oksenenko/code/rust-ruby-ls/lsp.log")
         .unwrap();
     let config = log4rs::Config::builder()
@@ -43,7 +41,7 @@ fn main() -> Result<()> {
         .build(
             log4rs::config::Root::builder()
                 .appender("file")
-                .build(log::LevelFilter::Debug),
+                .build(log::LevelFilter::Info),
         )
         .unwrap();
     log4rs::init_config(config).unwrap();
@@ -216,14 +214,21 @@ fn handle_goto_definition_request(
 
     let start = Instant::now();
 
-    let file = params.text_document_position_params.text_document.uri.to_file_path().unwrap();
+    let file = params
+        .text_document_position_params
+        .text_document
+        .uri
+        .to_file_path()
+        .unwrap();
     let position = params.text_document_position_params.position;
     let position = Point {
-        row: position.line.try_into()? ,
-        column: position.character.try_into()?
+        row: position.line.try_into()?,
+        column: position.character.try_into()?,
     };
 
-    let symbols: Vec<Location> = indexer.find_definition(file.as_path(), position).iter()
+    let symbols: Vec<Location> = indexer
+        .find_definition(file.as_path(), position)
+        .iter()
         .map(convert_to_lsp_sym_info)
         .map(|s| s.location)
         .collect();

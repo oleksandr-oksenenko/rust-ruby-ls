@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use itertools::Itertools;
-use log::{error, info, warn, debug};
+use log::{debug, error, info, warn};
 use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 use tree_sitter::Node;
 
@@ -51,7 +51,7 @@ pub enum NodeName {
     Left,
     MethodParameters,
     Receiver,
-    Method
+    Method,
 }
 
 impl AsRef<[u8]> for NodeName {
@@ -60,12 +60,7 @@ impl AsRef<[u8]> for NodeName {
     }
 }
 
-pub fn parse(
-    file: &Path,
-    source: &[u8],
-    node: Node,
-    parent: Option<Arc<RSymbol>>,
-) -> Vec<Arc<RSymbol>> {
+pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Vec<Arc<RSymbol>> {
     let node_kind = match node.kind().try_into() {
         Ok(k) => k,
         Err(_) => return vec![],
@@ -75,17 +70,17 @@ pub fn parse(
         NodeKind::Program => {
             info!("empty file: {:?}", file);
             vec![]
-        },
+        }
 
         NodeKind::Class | NodeKind::Module => parse_class(file, source, node, parent),
 
         NodeKind::Method => {
             vec![Arc::new(parse_method(file, source, node, parent))]
-        },
+        }
 
         NodeKind::SingletonMethod => {
             vec![Arc::new(parse_singleton_method(file, source, node, parent))]
-        },
+        }
 
         NodeKind::Assignment => parse_assignment(file, source, node, parent)
             .unwrap_or(Vec::new())
@@ -96,21 +91,16 @@ pub fn parse(
         NodeKind::Comment | NodeKind::Call => {
             // TODO: Implement
             vec![]
-        },
+        }
 
         _ => {
             // warn!( "Unknown node kind: {}", node.kind());
             vec![]
-        },
+        }
     }
 }
 
-pub fn parse_class(
-    file: &Path,
-    source: &[u8],
-    node: Node,
-    parent: Option<Arc<RSymbol>>,
-) -> Vec<Arc<RSymbol>> {
+pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Vec<Arc<RSymbol>> {
     debug!("Parsing {:?} at {:?}", file, node.start_position());
 
     assert!(node.kind() == NodeKind::Class || node.kind() == NodeKind::Module);
@@ -160,12 +150,7 @@ pub fn parse_class(
     result
 }
 
-pub fn parse_method(
-    file: &Path,
-    source: &[u8],
-    node: Node,
-    parent: Option<Arc<RSymbol>>,
-) -> RSymbol {
+pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
     assert!(node.kind() == NodeKind::Method || node.kind() == NodeKind::SingletonMethod);
 
     let scopes = match &parent {
@@ -189,9 +174,7 @@ pub fn parse_method(
     if let Some(method_parameters) = node.child_by_field_name(NodeName::MethodParameters) {
         for param in method_parameters.children(&mut cursor) {
             let param = match param.kind().try_into().unwrap() {
-                NodeKind::Identifier => {
-                    RMethodParam::Regular(param.utf8_text(source).unwrap().to_string())
-                }
+                NodeKind::Identifier => RMethodParam::Regular(param.utf8_text(source).unwrap().to_string()),
                 NodeKind::OptionalParameter => {
                     let name_node = param.child_by_field_name(NodeName::Name).unwrap();
                     let name = name_node.utf8_text(source).unwrap().to_string();
@@ -219,24 +202,14 @@ pub fn parse_method(
     })
 }
 
-pub fn parse_singleton_method(
-    file: &Path,
-    source: &[u8],
-    node: Node,
-    parent: Option<Arc<RSymbol>>,
-) -> RSymbol {
+pub fn parse_singleton_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
     match parse_method(file, source, node, parent) {
         RSymbol::Method(method) => RSymbol::SingletonMethod(method),
         _ => unreachable!(),
     }
 }
 
-fn parse_assignment(
-    file: &Path,
-    source: &[u8],
-    node: Node,
-    parent: Option<Arc<RSymbol>>,
-) -> Option<Vec<RSymbol>> {
+fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Option<Vec<RSymbol>> {
     assert_eq!(node.kind(), NodeKind::Assignment);
 
     let lhs = node.child_by_field_name(NodeName::Left).unwrap();
@@ -253,9 +226,7 @@ fn parse_assignment(
             let mut cursor = lhs.walk();
             Some(
                 lhs.named_children(&mut cursor)
-                    .filter(|n| {
-                        n.kind() == NodeKind::Constant || n.kind() == NodeKind::RestAssignment
-                    })
+                    .filter(|n| n.kind() == NodeKind::Constant || n.kind() == NodeKind::RestAssignment)
                     .filter_map(|node| parse_constant(file, source, &node, parent.clone()))
                     .collect(),
             )
@@ -267,30 +238,50 @@ fn parse_assignment(
                 file: file.to_path_buf(),
                 name,
                 location: node.start_position(),
-                parent: None
+                parent: None,
             })])
         }
 
         NodeKind::ScopeResolution => {
-            info!("Scope resolution assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
+            info!(
+                "Scope resolution assignment: {}, file: {:?}, range: {:?}",
+                node.to_sexp(),
+                file,
+                node.range()
+            );
             // TODO: parse scope resolution constant assignment
             None
         }
 
         NodeKind::InstanceVariable | NodeKind::ClassVariable => {
-            info!("Instance/class variable assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
+            info!(
+                "Instance/class variable assignment: {}, file: {:?}, range: {:?}",
+                node.to_sexp(),
+                file,
+                node.range()
+            );
             // TODO: parse instance and class variables
             None
         }
 
         NodeKind::Identifier => {
-            info!("Identifier assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
+            info!(
+                "Identifier assignment: {}, file: {:?}, range: {:?}",
+                node.to_sexp(),
+                file,
+                node.range()
+            );
             // TODO: variable declaration, should parse?
             None
         }
 
         NodeKind::Call => {
-            info!("Call assignment: {}, file: {:?}, range: {:?}", node.to_sexp(), file, node.range());
+            info!(
+                "Call assignment: {}, file: {:?}, range: {:?}",
+                node.to_sexp(),
+                file,
+                node.range()
+            );
             // TODO: parse attr_accessors
             None
         }
@@ -307,18 +298,9 @@ fn parse_assignment(
     }
 }
 
-pub fn parse_constant(
-    file: &Path,
-    source: &[u8],
-    node: &Node,
-    parent: Option<Arc<RSymbol>>,
-) -> Option<RSymbol> {
+pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Arc<RSymbol>>) -> Option<RSymbol> {
     if node.kind() != NodeKind::Constant && node.kind() != NodeKind::RestAssignment {
-        error!(
-            "{} instead of constant in {file:?} at {:?}",
-            node.kind(),
-            node.range()
-        );
+        error!("{} instead of constant in {file:?} at {:?}", node.kind(), node.range());
     }
 
     let node = if node.kind() == NodeKind::RestAssignment {
@@ -417,9 +399,7 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
 
     let scope_node = parent.child_by_field_name(NodeName::Scope);
     let name_node = parent.child_by_field_name(NodeName::Name).unwrap();
-    let is_scope = scope_node
-        .map(|n| n.range() == node.range())
-        .unwrap_or(false);
+    let is_scope = scope_node.map(|n| n.range() == node.range()).unwrap_or(false);
     let is_name = name_node.range() == node.range();
     assert!(is_scope || is_name);
 
@@ -451,20 +431,27 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
                         }
 
                         scope = new_scope
-                    },
+                    }
 
                     NodeKind::Constant => {
                         scopes.push(s.utf8_text(source).unwrap());
                         break;
-                    },
+                    }
 
                     // weird module definitions with variables
                     NodeKind::ClassVariable | NodeKind::InstanceVariable => {
-                        warn!("Couldn't get parent scope resolution for definition: {}", node.utf8_text(source).unwrap());
-                        return vec![]
-                    },
+                        warn!(
+                            "Couldn't get parent scope resolution for definition: {}",
+                            node.utf8_text(source).unwrap()
+                        );
+                        return vec![];
+                    }
 
-                    _ => panic!("Impossible kind in scope resolution: {}: {}", p.to_sexp(), p.utf8_text(source).unwrap()),
+                    _ => panic!(
+                        "Impossible kind in scope resolution: {}: {}",
+                        p.to_sexp(),
+                        p.utf8_text(source).unwrap()
+                    ),
                 }
             }
         }
@@ -493,9 +480,7 @@ pub fn get_child_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a 
 
     let scope_node = parent.child_by_field_name(NodeName::Scope);
     let name_node = parent.child_by_field_name(NodeName::Name).unwrap();
-    let is_scope = scope_node
-        .map(|n| n.range() == node.range())
-        .unwrap_or(false);
+    let is_scope = scope_node.map(|n| n.range() == node.range()).unwrap_or(false);
     let is_name = name_node.range() == node.range();
     assert!(is_scope || is_name);
 
@@ -537,11 +522,7 @@ pub fn get_full_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a s
 pub fn get_full_and_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
     let full_scope = get_full_scope_resolution(node, source);
 
-    if full_scope
-        .first()
-        .map(|s| *s == GLOBAL_SCOPE_VALUE)
-        .unwrap_or(false)
-    {
+    if full_scope.first().map(|s| *s == GLOBAL_SCOPE_VALUE).unwrap_or(false) {
         return full_scope;
     }
 
@@ -812,10 +793,7 @@ end
         F: FnOnce(&Node) -> Vec<&'a str>,
     {
         let parsed = parse_source(source);
-        let node = parsed
-            .root_node()
-            .descendant_for_point_range(*point, *point)
-            .unwrap();
+        let node = parsed.root_node().descendant_for_point_range(*point, *point).unwrap();
 
         let actual = f(&node);
 

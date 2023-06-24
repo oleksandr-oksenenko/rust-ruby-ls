@@ -9,19 +9,20 @@ use crate::indexer::RSymbol;
 
 pub struct SymbolsMatcher<'a> {
     matcher: SkimMatcherV2,
-    root_path: &'a Path
+    root_path: &'a Path,
 }
 
 impl<'a> SymbolsMatcher<'a> {
     pub fn new(root_path: &'a Path) -> SymbolsMatcher {
         SymbolsMatcher {
             matcher: SkimMatcherV2::default().smart_case(),
-            root_path
+            root_path,
         }
     }
 
     pub fn match_rsymbols(&self, query: &str, symbols: &[Arc<RSymbol>]) -> Vec<Arc<RSymbol>> {
-        let mut scores: Vec<(Arc<RSymbol>, [i32;5])> = symbols.iter()
+        let mut scores: Vec<(Arc<RSymbol>, [i32; 5])> = symbols
+            .iter()
             .filter_map(|s| {
                 let name = s.name();
 
@@ -44,7 +45,7 @@ impl<'a> SymbolsMatcher<'a> {
             .map(|m| (m.0, m.1))
             .collect();
 
-        scores.sort_by_key(|m| { Reverse(m.1) });
+        scores.sort_by_key(|m| Reverse(m.1));
 
         scores.iter().map(|m| m.0.clone()).collect()
     }

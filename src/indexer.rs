@@ -9,9 +9,9 @@ use std::time::Instant;
 use anyhow::Result;
 
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use rayon::prelude::*;
-use tree_sitter::{Parser, Point, Tree, Node};
+use tree_sitter::{Node, Parser, Point, Tree};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
@@ -104,8 +104,15 @@ impl RSymbol {
 
 impl std::fmt::Debug for RSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} in {:?} at {:?}, name = {}, parent = {:?}", 
-               self.kind(), self.file(), self.location(), self.name(), self.parent())
+        write!(
+            f,
+            "{} in {:?} at {:?}, name = {}, parent = {:?}",
+            self.kind(),
+            self.file(),
+            self.location(),
+            self.name(),
+            self.parent()
+        )
     }
 }
 
@@ -164,10 +171,7 @@ impl IndexingContext {
         parser.set_language(language())?;
         let parsed = parser.parse(&source[..], None).unwrap();
 
-        Ok(IndexingContext {
-            source,
-            tree: parsed,
-        })
+        Ok(IndexingContext { source, tree: parsed })
     }
 }
 
@@ -184,8 +188,7 @@ impl<'a> Indexer<'a> {
     pub fn new(root_dir: &Path, progress_reporter: ProgressReporter<'a>) -> Indexer<'a> {
         let root_dir = root_dir.to_path_buf();
         let ruby_env_provider = RubyEnvProvider::new(root_dir.clone());
-        let ruby_filename_converter =
-            RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
+        let ruby_filename_converter = RubyFilenameConverter::new(root_dir.clone(), &ruby_env_provider).unwrap();
         Indexer {
             ruby_env_provider,
             ruby_filename_converter,
@@ -231,7 +234,7 @@ impl<'a> Indexer<'a> {
                 error!("Unknown node kind in find definition: {}", node.kind());
                 return vec![];
             }
-            Ok(nk) => nk
+            Ok(nk) => nk,
         };
 
         match node_kind {
@@ -241,7 +244,7 @@ impl<'a> Indexer<'a> {
             _ => {
                 warn!("Find definition of {} node is not supported", node.kind());
                 vec![]
-            },
+            }
         }
     }
 
@@ -252,16 +255,16 @@ impl<'a> Indexer<'a> {
         let parent = match node.parent() {
             None => {
                 warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
-                return vec![]
-            },
-            Some(p) => p
+                return vec![];
+            }
+            Some(p) => p,
         };
         let parent_node_kind = match parent.kind().try_into() {
             Err(_) => {
                 warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
-                return vec![]
-            },
-            Ok(k) => k
+                return vec![];
+            }
+            Ok(k) => k,
         };
 
         match parent_node_kind {
@@ -284,7 +287,7 @@ impl<'a> Indexer<'a> {
                 } else {
                     unreachable!()
                 }
-            },
+            }
 
             _ => {
                 warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
@@ -299,20 +302,20 @@ impl<'a> Indexer<'a> {
 
         let receiver_definitions = receiver.map(|r| self.find_definition(file, r.start_position()));
 
-        self.symbols.iter()
+        self.symbols
+            .iter()
             // TODO: depends on the type of receiver, change after adding more definition types
             .filter(|s| matches!(***s, RSymbol::SingletonMethod(_)))
             .filter(|s| {
                 let receiver_definitions = match &receiver_definitions {
                     None => return true,
-                    Some(rd) => rd
+                    Some(rd) => rd,
                 };
                 let parent = match s.parent() {
                     None => return true,
-                    Some(p) => p
+                    Some(p) => p,
                 };
                 if receiver_definitions.is_empty() {
-                    info!("Reciever definitions are empty");
                     return true;
                 }
                 receiver_definitions.contains(parent)
@@ -332,7 +335,8 @@ impl<'a> Indexer<'a> {
 
         let name = node.utf8_text(source).unwrap();
 
-        self.symbols.iter()
+        self.symbols
+            .iter()
             .filter_map(|s| {
                 let global_var = matches!(**s, RSymbol::GlobalVariable(_));
                 let name_equals = s.name() == name;
@@ -343,7 +347,7 @@ impl<'a> Indexer<'a> {
                     None
                 }
             })
-        .collect()
+            .collect()
     }
 
     fn find_constant(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbol>> {
@@ -355,10 +359,7 @@ impl<'a> Indexer<'a> {
             .map(|s| *s == parsers::GLOBAL_SCOPE_VALUE)
             .unwrap_or(false);
         let constant_scope = if is_global {
-            constant_scope
-                .into_iter()
-                .skip(1)
-                .join(parsers::SCOPE_DELIMITER)
+            constant_scope.into_iter().skip(1).join(parsers::SCOPE_DELIMITER)
         } else {
             constant_scope.into_iter().join(parsers::SCOPE_DELIMITER)
         };
@@ -377,14 +378,12 @@ impl<'a> Indexer<'a> {
             .chain([constant_scope.as_str()])
             .join(parsers::SCOPE_DELIMITER);
 
-        let symbols = self.symbols.iter().filter(|s| {
-            matches!(
-                ***s,
-                RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)
-            )
-        });
+        let symbols = self
+            .symbols
+            .iter()
+            .filter(|s| matches!(***s, RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)));
 
-        if is_global {
+        let results = if is_global {
             info!("Global scope, searching for {constant_scope}");
             symbols
                 .filter_map(|s| {
@@ -396,19 +395,14 @@ impl<'a> Indexer<'a> {
                 })
                 .collect()
         } else {
-            info!(
-                "Searching for {context_scope} or {file_scope} or {context_scope} in the same file"
-            );
+            info!("Searching for {context_scope} or {file_scope} or {context_scope} in the same file");
             // search in contexts first
             let found_symbols: Vec<Arc<RSymbol>> = symbols
                 .clone()
                 .filter_map(|s| {
                     let name = s.name();
 
-                    if name == context_scope
-                        || name == file_scope
-                        || (name == constant_scope && s.file() == file)
-                    {
+                    if name == context_scope || name == file_scope || (name == constant_scope && s.file() == file) {
                         Some(s.clone())
                     } else {
                         None
@@ -432,7 +426,11 @@ impl<'a> Indexer<'a> {
             } else {
                 found_symbols
             }
-        }
+        };
+
+        debug!("Found {} results", results.len());
+
+        results
     }
 
     pub fn index(&mut self) -> Result<()> {
@@ -450,11 +448,7 @@ impl<'a> Indexer<'a> {
         self.symbols = symbols;
         self.build_file_index();
 
-        info!(
-            "Found {} symbols, took {:?}",
-            self.symbols.len(),
-            start.elapsed()
-        );
+        info!("Found {} symbols, took {:?}", self.symbols.len(), start.elapsed());
 
         Ok(())
     }
@@ -470,9 +464,9 @@ impl<'a> Indexer<'a> {
     }
 
     fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {
-        let progress_token =
-            self.progress_reporter
-                .send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
+        let progress_token = self
+            .progress_reporter
+            .send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
 
         let classes: Vec<Arc<RSymbol>> = WalkDir::new(dir)
             .into_iter()

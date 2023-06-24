@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result, Context};
+use anyhow::{anyhow, Context, Result};
 
 use itertools::Itertools;
 
@@ -12,15 +12,19 @@ const AUTOLOAD_PATHS_CMD: &str = "rails runner 'puts ActiveSupport::Dependencies
 
 pub struct RubyFilenameConverter {
     root_path: PathBuf,
-    autoload_paths: Vec<String>
+    autoload_paths: Vec<String>,
 }
 
 impl RubyFilenameConverter {
     pub fn new(root_path: PathBuf, ruby_env_provider: &RubyEnvProvider) -> Result<RubyFilenameConverter> {
-        let output = ruby_env_provider.run_context_command(AUTOLOAD_PATHS_CMD)
+        let output = ruby_env_provider
+            .run_context_command(AUTOLOAD_PATHS_CMD)
             .with_context(|| "Failed to run rails runner command")?;
-        let mut autoload_paths: Vec<String> = String::from_utf8(output)?.split('\n')
-            .map(|s| s.to_string()).unique().collect();
+        let mut autoload_paths: Vec<String> = String::from_utf8(output)?
+            .split('\n')
+            .map(|s| s.to_string())
+            .unique()
+            .collect();
 
         let mut other_paths = RAILS_ROOT_PATHS.iter().map(|s| s.to_string()).collect();
 
@@ -28,26 +32,27 @@ impl RubyFilenameConverter {
 
         Ok(RubyFilenameConverter {
             root_path,
-            autoload_paths
+            autoload_paths,
         })
     }
 
     pub fn path_to_scope(&self, path: &Path) -> Result<Vec<String>> {
         let local_path = path.strip_prefix(&self.root_path)?.with_extension("");
 
-        let local_path = self.autoload_paths
+        let local_path = self
+            .autoload_paths
             .iter()
             .find_map(|p| local_path.as_path().strip_prefix(p).ok())
             .unwrap_or(&local_path);
 
         let (sucesses, failures): (Vec<_>, Vec<_>) = local_path
-                                   .iter()
-                                   .map(|os_str| {
-                                       os_str
-                                           .to_str()
-                                           .ok_or(Err(anyhow!("Couldn't convert from OsStr to str")))
-                                   })
-        .partition_result();
+            .iter()
+            .map(|os_str| {
+                os_str
+                    .to_str()
+                    .ok_or(Err(anyhow!("Couldn't convert from OsStr to str")))
+            })
+            .partition_result();
 
         if !failures.is_empty() {
             return failures.into_iter().next().unwrap();
@@ -98,7 +103,10 @@ mod tests {
 
     #[test]
     fn test_name_to_scope() {
-        assert_eq!("ModuleOneTwoThree", RubyFilenameConverter::name_to_scope("module_one_two_three"));
+        assert_eq!(
+            "ModuleOneTwoThree",
+            RubyFilenameConverter::name_to_scope("module_one_two_three")
+        );
     }
 
     #[test]
