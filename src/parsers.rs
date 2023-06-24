@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::{error, info, warn, debug};
 use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 use tree_sitter::Node;
 
@@ -111,6 +111,8 @@ pub fn parse_class(
     node: Node,
     parent: Option<Arc<RSymbol>>,
 ) -> Vec<Arc<RSymbol>> {
+    debug!("Parsing {:?} at {:?}", file, node.start_position());
+
     assert!(node.kind() == NodeKind::Class || node.kind() == NodeKind::Module);
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
@@ -449,12 +451,20 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
                         }
 
                         scope = new_scope
-                    }
+                    },
+
                     NodeKind::Constant => {
                         scopes.push(s.utf8_text(source).unwrap());
                         break;
-                    }
-                    _ => unreachable!(),
+                    },
+
+                    // weird module definitions with variables
+                    NodeKind::ClassVariable | NodeKind::InstanceVariable => {
+                        warn!("Couldn't get parent scope resolution for definition: {}", node.utf8_text(source).unwrap());
+                        return vec![]
+                    },
+
+                    _ => panic!("Impossible kind in scope resolution: {}: {}", p.to_sexp(), p.utf8_text(source).unwrap()),
                 }
             }
         }
