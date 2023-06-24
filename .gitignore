@@ -1,3 +1,5 @@
 /target
 stubs/
 lsp.log
+
+test_data/
