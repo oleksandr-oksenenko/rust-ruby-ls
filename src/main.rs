@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         .build(
             log4rs::config::Root::builder()
                 .appender("file")
-                .build(log::LevelFilter::Info),
+                .build(log::LevelFilter::Debug),
         )
         .unwrap();
     log4rs::init_config(config).unwrap();
