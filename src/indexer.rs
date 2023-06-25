@@ -137,9 +137,16 @@ pub struct RMethod {
 
 #[derive(PartialEq, Eq)]
 pub enum RMethodParam {
-    Regular(String),
-    Optional(String),
-    Keyword(String),
+    Regular(MethodParam),
+    Optional(MethodParam),
+    Keyword(MethodParam),
+}
+
+#[derive(PartialEq, Eq)]
+pub struct MethodParam {
+    pub file: PathBuf,
+    pub name: String,
+    pub location: Point,
 }
 
 #[derive(PartialEq, Eq)]
@@ -259,39 +266,45 @@ impl<'a> Indexer<'a> {
             }
             Some(p) => p,
         };
-        let parent_node_kind = match parent.kind().try_into() {
-            Err(_) => {
-                warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
-                return vec![];
-            }
-            Ok(k) => k,
-        };
 
-        match parent_node_kind {
-            parsers::NodeKind::Call => {
-                let receiver = parent.child_by_field_name(parsers::NodeName::Receiver);
-                let is_receiver = receiver.map(|n| n.range() == node.range()).unwrap_or(false);
+        let context_node = parsers::get_identifier_context(node);
+        if context_node.is_none() {
+            error!("Failed to determine context of node in {:?} at {:?}", file, node.range());
+            return vec![];
+        }
+        let context_node = context_node.unwrap();
 
-                let method = parent.child_by_field_name(parsers::NodeName::Method);
-                let is_method = method.map(|n| n.range() == node.range()).unwrap_or(false);
-
-                if !is_receiver && !is_method {
-                    warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
-                    vec![]
-                } else if is_method {
+        match context_node.kind().try_into() {
+            Err(_) => panic!("Unknown context node kind: {}", context_node.kind()),
+            Ok(context_node_kind) => match context_node_kind {
+                parsers::NodeKind::Call => {
+                    let receiver = parent.child_by_field_name(parsers::NodeName::Receiver);
                     self.find_method(identifier, file, receiver)
-                } else if is_receiver {
-                    // TODO: handle receiver
-                    warn!("Searching for recievers is not implemented");
-                    vec![]
-                } else {
-                    unreachable!()
-                }
-            }
+                },
 
-            _ => {
-                warn!("Unknown type of identifier in {:?} at {:?}", file, node.range());
-                vec![]
+                parsers::NodeKind::Method | parsers::NodeKind::SingletonMethod => {
+                    match parsers::get_method_variable_definition(node, &context_node, file, source) {
+                        None => {
+                            error!("Failed to find variable definition in {:?} at {:?}", file, node.start_position());
+                            vec![]
+                        },
+
+                        Some(variable_definition) => {
+                            vec![Arc::new(RSymbol::Variable(RVariable {
+                                file: file.to_path_buf(),
+                                name: variable_definition.utf8_text(source).unwrap().to_string(),
+                                location: variable_definition.start_position(),
+                                parent: None
+                            }))]
+                        }
+                    }
+                },
+
+                _ => {
+                    warn!("Unknown identifier context in {:?} at {:?}", file, node.start_position());
+                    vec![]
+                }
+
             }
         }
     }
