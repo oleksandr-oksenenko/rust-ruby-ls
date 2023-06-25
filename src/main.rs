@@ -227,7 +227,7 @@ fn handle_goto_definition_request(
     };
 
     let symbols: Vec<Location> = indexer
-        .find_definition(file.as_path(), position)
+        .find_definition(file.as_path(), position)?
         .iter()
         .map(convert_to_lsp_sym_info)
         .map(|s| s.location)

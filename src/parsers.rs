@@ -5,7 +5,7 @@ use log::{debug, error, info, warn};
 use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 use tree_sitter::{Node, Query, QueryCursor};
 
-use crate::indexer::{RClass, RConstant, RMethod, RMethodParam, RSymbol, MethodParam};
+use crate::indexer::{MethodParam, RClass, RConstant, RMethod, RMethodParam, RSymbol};
 
 pub const SCOPE_DELIMITER: &str = "::";
 
@@ -348,7 +348,12 @@ pub fn get_identifier_context<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     None
 }
 
-pub fn get_method_variable_definition<'a>(node: &Node<'a>, context: &Node<'a>, context_file: &Path, source: &[u8]) -> Option<Node<'a>> {
+pub fn get_method_variable_definition<'a>(
+    node: &Node<'a>,
+    context: &Node<'a>,
+    context_file: &Path,
+    source: &[u8],
+) -> Option<Node<'a>> {
     let variable_name = node.utf8_text(source).unwrap();
 
     let mut cursor = context.walk();
@@ -361,24 +366,26 @@ pub fn get_method_variable_definition<'a>(node: &Node<'a>, context: &Node<'a>, c
         return None;
     };
 
-    let query = format!(r#"
+    let query = format!(
+        r#"
         (assignment 
             left: (identifier) @variable (#eq? @variable {variable_name})
             right: (_)) @assignment
-        "#);
+        "#
+    );
     // TODO: handle unwrap
     let query = Query::new(tree_sitter_ruby::language(), query.as_str()).unwrap();
 
     let closest_assignment = QueryCursor::new()
         .matches(&query, *context, source)
-            .flat_map(|m| m.captures)
-            .map(|c| c.node)
-            .filter(|n| n.range() < node.range())
-            .sorted_by_key(|n| n.range())
-            .last();
+        .flat_map(|m| m.captures)
+        .map(|c| c.node)
+        .filter(|n| n.range() < node.range())
+        .sorted_by_key(|n| n.range())
+        .last();
     // TODO: determine reachability from assignment to node (e.g. if assignment is not in the
     // correct if branch)
-    
+
     match closest_assignment {
         Some(n) => return Some(n),
 
@@ -389,38 +396,37 @@ pub fn get_method_variable_definition<'a>(node: &Node<'a>, context: &Node<'a>, c
             for param_node in get_method_param_nodes(context_file, context) {
                 info!("param_node: {param_node:?}");
                 match param_node.kind().try_into().unwrap() {
-                        NodeKind::Identifier => {
-                            let param_name = param_node.utf8_text(source).unwrap();
+                    NodeKind::Identifier => {
+                        let param_name = param_node.utf8_text(source).unwrap();
 
-                            info!("param name: {param_name}");
+                        info!("param name: {param_name}");
 
-                            if param_name == variable_name {
-                                return Some(param_node);
-                            }
-                        },
-                        NodeKind::OptionalParameter => {
-                            let name_node = param_node.child_by_field_name(NodeName::Name).unwrap();
-                            let name = name_node.utf8_text(source).unwrap().to_string();
+                        if param_name == variable_name {
+                            return Some(param_node);
+                        }
+                    }
+                    NodeKind::OptionalParameter => {
+                        let name_node = param_node.child_by_field_name(NodeName::Name).unwrap();
+                        let name = name_node.utf8_text(source).unwrap().to_string();
 
-                            info!("param name: {name}");
+                        info!("param name: {name}");
 
-                            if name == variable_name {
-                                return Some(param_node);
-                            }
-                        },
-                        NodeKind::KeywordParameter => {
-                            let name_node = param_node.child_by_field_name(NodeName::Name).unwrap();
-                            let name = name_node.utf8_text(source).unwrap().to_string();
+                        if name == variable_name {
+                            return Some(param_node);
+                        }
+                    }
+                    NodeKind::KeywordParameter => {
+                        let name_node = param_node.child_by_field_name(NodeName::Name).unwrap();
+                        let name = name_node.utf8_text(source).unwrap().to_string();
 
-                            info!("param name: {name}");
+                        info!("param name: {name}");
 
-                            if name == variable_name {
-                                return Some(param_node);
-                            }
-                        },
+                        if name == variable_name {
+                            return Some(param_node);
+                        }
+                    }
 
-                        _ => unreachable!()
-
+                    _ => unreachable!(),
                 }
             }
         }
@@ -429,19 +435,25 @@ pub fn get_method_variable_definition<'a>(node: &Node<'a>, context: &Node<'a>, c
     None
 }
 
-fn get_method_param_nodes<'a>(file: &Path, method_node: &Node<'a>) -> Vec<Node<'a>>{
+fn get_method_param_nodes<'a>(file: &Path, method_node: &Node<'a>) -> Vec<Node<'a>> {
     let mut params = Vec::new();
 
     let mut cursor = method_node.walk();
     if let Some(method_parameters) = method_node.child_by_field_name(NodeName::Parameters) {
         for param in method_parameters.children(&mut cursor) {
             match param.kind().try_into() {
-                Err(_) => {},
+                Err(_) => {}
                 Ok(kind) => match kind {
-                    NodeKind::Identifier | NodeKind::OptionalParameter | NodeKind::KeywordParameter => params.push(param),
+                    NodeKind::Identifier | NodeKind::OptionalParameter | NodeKind::KeywordParameter => {
+                        params.push(param)
+                    }
 
-                    _ => warn!("New kind of method kind in {file:?} at {:?}: {}", method_node.start_position(), param.kind())
-                }
+                    _ => warn!(
+                        "New kind of method kind in {file:?} at {:?}: {}",
+                        method_node.start_position(),
+                        param.kind()
+                    ),
+                },
             };
         }
     }
