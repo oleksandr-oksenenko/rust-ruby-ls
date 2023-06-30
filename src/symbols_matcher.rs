@@ -5,7 +5,7 @@ use std::sync::Arc;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::indexer::RSymbol;
+use crate::types::RSymbol;
 
 pub struct SymbolsMatcher<'a> {
     matcher: SkimMatcherV2,

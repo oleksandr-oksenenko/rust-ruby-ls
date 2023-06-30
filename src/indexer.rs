@@ -15,155 +15,17 @@ use tree_sitter::{Node, Parser, Point, Tree};
 use tree_sitter_ruby::language;
 use walkdir::WalkDir;
 
-use crate::parsers;
-use crate::parsers::{get_context_scope, get_parent_scope_resolution, parse};
+use crate::parsers::general::parse;
+use crate::parsers::identifiers::get_identifier_context;
+use crate::parsers::methods::get_method_variable_definition;
+use crate::parsers::scopes::{get_parent_scope_resolution, get_context_scope};
 use crate::progress_reporter::ProgressReporter;
 use crate::ruby_env_provider::RubyEnvProvider;
 use crate::ruby_filename_converter::RubyFilenameConverter;
 use crate::symbols_matcher::SymbolsMatcher;
 
-#[allow(dead_code)]
-#[derive(PartialEq, Eq)]
-pub enum RSymbol {
-    Class(RClass),
-    Module(RClass),
-    Method(RMethod),
-    SingletonMethod(RMethod),
-    Constant(RConstant),
-    Variable(RVariable),
-    GlobalVariable(RVariable),
-    ClassVariable(RVariable),
-}
-
-impl RSymbol {
-    pub fn kind(&self) -> &str {
-        match self {
-            RSymbol::Class(_) => "class",
-            RSymbol::Module(_) => "module",
-            RSymbol::Method(_) => "method",
-            RSymbol::SingletonMethod(_) => "singleton_method",
-            RSymbol::Constant(_) => "constant",
-            RSymbol::Variable(_) => "variable",
-            RSymbol::GlobalVariable(_) => "global_variable",
-            RSymbol::ClassVariable(_) => "class_variable",
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        match self {
-            RSymbol::Class(class) => &class.name,
-            RSymbol::Module(module) => &module.name,
-            RSymbol::Method(method) => &method.name,
-            RSymbol::SingletonMethod(method) => &method.name,
-            RSymbol::Constant(constant) => &constant.name,
-            RSymbol::Variable(variable) => &variable.name,
-            RSymbol::GlobalVariable(variable) => &variable.name,
-            RSymbol::ClassVariable(variable) => &variable.name,
-        }
-    }
-
-    pub fn file(&self) -> &Path {
-        match self {
-            RSymbol::Class(class) => &class.file,
-            RSymbol::Module(module) => &module.file,
-            RSymbol::Method(method) => &method.file,
-            RSymbol::SingletonMethod(method) => &method.file,
-            RSymbol::Constant(constant) => &constant.file,
-            RSymbol::Variable(variable) => &variable.file,
-            RSymbol::GlobalVariable(variable) => &variable.file,
-            RSymbol::ClassVariable(v) => &v.file,
-        }
-    }
-
-    pub fn location(&self) -> &Point {
-        match self {
-            RSymbol::Class(class) => &class.location,
-            RSymbol::Module(module) => &module.location,
-            RSymbol::Method(method) => &method.location,
-            RSymbol::SingletonMethod(method) => &method.location,
-            RSymbol::Constant(constant) => &constant.location,
-            RSymbol::Variable(variable) => &variable.location,
-            RSymbol::GlobalVariable(variable) => &variable.location,
-            RSymbol::ClassVariable(variable) => &variable.location,
-        }
-    }
-
-    pub fn parent(&self) -> &Option<Arc<RSymbol>> {
-        match self {
-            RSymbol::Class(s) => &s.parent,
-            RSymbol::Module(s) => &s.parent,
-            RSymbol::Method(s) => &s.parent,
-            RSymbol::SingletonMethod(s) => &s.parent,
-            RSymbol::Constant(s) => &s.parent,
-            RSymbol::Variable(s) => &s.parent,
-            RSymbol::GlobalVariable(s) => &s.parent,
-            RSymbol::ClassVariable(s) => &s.parent,
-        }
-    }
-}
-
-impl std::fmt::Debug for RSymbol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} in {:?} at {:?}, name = {}, parent = {:?}",
-            self.kind(),
-            self.file(),
-            self.location(),
-            self.name(),
-            self.parent()
-        )
-    }
-}
-
-#[derive(PartialEq, Eq)]
-pub struct RClass {
-    pub file: PathBuf,
-    pub name: String,
-    pub location: Point,
-    pub scopes: Vec<String>,
-    pub superclass_scopes: Vec<String>,
-    pub parent: Option<Arc<RSymbol>>,
-}
-
-#[derive(PartialEq, Eq)]
-pub struct RMethod {
-    pub file: PathBuf,
-    pub name: String,
-    pub location: Point,
-    pub parameters: Vec<RMethodParam>,
-    pub parent: Option<Arc<RSymbol>>,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum RMethodParam {
-    Regular(MethodParam),
-    Optional(MethodParam),
-    Keyword(MethodParam),
-}
-
-#[derive(PartialEq, Eq)]
-pub struct MethodParam {
-    pub file: PathBuf,
-    pub name: String,
-    pub location: Point,
-}
-
-#[derive(PartialEq, Eq)]
-pub struct RConstant {
-    pub file: PathBuf,
-    pub name: String,
-    pub location: Point,
-    pub parent: Option<Arc<RSymbol>>,
-}
-
-#[derive(PartialEq, Eq)]
-pub struct RVariable {
-    pub file: PathBuf,
-    pub name: String,
-    pub location: Point,
-    pub parent: Option<Arc<RSymbol>>,
-}
+use crate::parsers::types::{NodeKind, NodeName, GLOBAL_SCOPE_VALUE, SCOPE_DELIMITER};
+use crate::types::{RSymbol, RVariable};
 
 struct IndexingContext {
     source: Vec<u8>,
@@ -238,9 +100,9 @@ impl<'a> Indexer<'a> {
             .with_context(|| format!("Unknown node kind: {}", node.kind()))?;
 
         match node_kind {
-            parsers::NodeKind::Constant => Ok(self.find_constant(&node, file, &ctx.source)),
-            parsers::NodeKind::Identifier => self.find_identifier(&node, file, &ctx.source),
-            parsers::NodeKind::GlobalVariable => self.find_global_variable(&node, &ctx.source),
+            NodeKind::Constant => Ok(self.find_constant(&node, file, &ctx.source)),
+            NodeKind::Identifier => self.find_identifier(&node, file, &ctx.source),
+            NodeKind::GlobalVariable => self.find_global_variable(&node, &ctx.source),
             _ => Err(anyhow!("Find definition of {} node kind is not supported", node.kind())),
         }
     }
@@ -261,21 +123,21 @@ impl<'a> Indexer<'a> {
             )
         })?;
 
-        let context_node = parsers::get_identifier_context(node).ok_or(anyhow!(
+        let context_node = get_identifier_context(node).ok_or(anyhow!(
             "Failed to determine context of node in {:?} at {:?}",
             file,
             node.start_position()
         ))?;
 
         match context_node.kind().try_into()? {
-            parsers::NodeKind::Call => {
-                let receiver = parent.child_by_field_name(parsers::NodeName::Receiver);
+            NodeKind::Call => {
+                let receiver = parent.child_by_field_name(NodeName::Receiver);
                 self.find_method_definition(identifier, file, receiver)
             }
 
-            parsers::NodeKind::Method | parsers::NodeKind::SingletonMethod => {
+            NodeKind::Method | NodeKind::SingletonMethod => {
                 let variable_def =
-                    parsers::get_method_variable_definition(node, &context_node, file, source).ok_or(anyhow!(
+                    get_method_variable_definition(node, &context_node, file, source).ok_or(anyhow!(
                         "Failed to find variable definition in {:?} at {:?}",
                         file,
                         node.start_position()
@@ -336,8 +198,8 @@ impl<'a> Indexer<'a> {
     fn find_global_variable(&self, node: &Node, source: &[u8]) -> Result<Vec<Arc<RSymbol>>> {
         info!("Trying to find a global variable");
 
-        let node_kind: parsers::NodeKind = node.kind().try_into()?;
-        if node_kind != parsers::NodeKind::GlobalVariable {
+        let node_kind: NodeKind = node.kind().try_into()?;
+        if node_kind != NodeKind::GlobalVariable {
             bail!("Node kind is not global variable")
         }
 
@@ -365,18 +227,18 @@ impl<'a> Indexer<'a> {
         let constant_scope = get_parent_scope_resolution(node, source);
         let is_global = constant_scope
             .first()
-            .map(|s| *s == parsers::GLOBAL_SCOPE_VALUE)
+            .map(|s| *s == GLOBAL_SCOPE_VALUE)
             .unwrap_or(false);
         let constant_scope = if is_global {
-            constant_scope.into_iter().skip(1).join(parsers::SCOPE_DELIMITER)
+            constant_scope.into_iter().skip(1).join(SCOPE_DELIMITER)
         } else {
-            constant_scope.into_iter().join(parsers::SCOPE_DELIMITER)
+            constant_scope.into_iter().join(SCOPE_DELIMITER)
         };
 
         let context_scope = get_context_scope(node, source)
             .into_iter()
             .chain([constant_scope.as_str()])
-            .join(parsers::SCOPE_DELIMITER);
+            .join(SCOPE_DELIMITER);
 
         let file_scope = self.ruby_filename_converter.path_to_scope(file);
         let mut file_scope = file_scope.unwrap_or(vec![]);
@@ -385,7 +247,7 @@ impl<'a> Indexer<'a> {
             .iter()
             .map(|s| s.as_str())
             .chain([constant_scope.as_str()])
-            .join(parsers::SCOPE_DELIMITER);
+            .join(SCOPE_DELIMITER);
 
         let symbols = self
             .symbols

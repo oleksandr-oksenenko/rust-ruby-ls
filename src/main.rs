@@ -2,6 +2,7 @@
 use jemallocator::Jemalloc;
 use log::{error, info};
 use tree_sitter::Point;
+use types::RSymbol;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -21,6 +22,7 @@ use lsp_types::{
     ServerCapabilities, SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams,
 };
 
+mod types;
 mod indexer;
 mod parsers;
 mod progress_reporter;
