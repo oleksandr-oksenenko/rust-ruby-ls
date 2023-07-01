@@ -27,23 +27,6 @@ use crate::symbols_matcher::SymbolsMatcher;
 use crate::parsers::types::{NodeKind, NodeName, Scope};
 use crate::types::{RSymbol, RVariable};
 
-struct IndexingContext {
-    source: Vec<u8>,
-    tree: Tree,
-}
-
-impl IndexingContext {
-    pub fn new(file_path: &Path) -> Result<IndexingContext> {
-        let source = fs::read(file_path)?;
-
-        let mut parser = Parser::new();
-        parser.set_language(language())?;
-        let parsed = parser.parse(&source[..], None).unwrap();
-
-        Ok(IndexingContext { source, tree: parsed })
-    }
-}
-
 pub struct Indexer<'a> {
     root_dir: PathBuf,
     progress_reporter: ProgressReporter<'a>,
@@ -87,9 +70,9 @@ impl<'a> Indexer<'a> {
     }
 
     pub fn find_definition(&self, file: &Path, position: Point) -> Result<Vec<Arc<RSymbol>>> {
-        let ctx = IndexingContext::new(file).unwrap();
+        let (tree, source) = Self::read_file_tree(file)?;
 
-        let node = ctx.tree.root_node();
+        let node = tree.root_node();
         let node = node
             .descendant_for_point_range(position, position)
             .ok_or(anyhow!("Failed to find node of definition"))?;
@@ -100,9 +83,9 @@ impl<'a> Indexer<'a> {
             .with_context(|| format!("Unknown node kind: {}", node.kind()))?;
 
         match node_kind {
-            NodeKind::Constant => Ok(self.find_constant(&node, file, &ctx.source)),
-            NodeKind::Identifier => self.find_identifier(&node, file, &ctx.source),
-            NodeKind::GlobalVariable => self.find_global_variable(&node, &ctx.source),
+            NodeKind::Constant => Ok(self.find_constant(&node, file, &source)),
+            NodeKind::Identifier => self.find_identifier(&node, file, &source),
+            NodeKind::GlobalVariable => self.find_global_variable(&node, &source),
             _ => Err(anyhow!("Find definition of {} node kind is not supported", node.kind())),
         }
     }
@@ -334,19 +317,18 @@ impl<'a> Indexer<'a> {
     }
 
     fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbol>>> {
-        let ctx = IndexingContext::new(path.as_path())?;
-
+        let (tree, source) = Self::read_file_tree(&path)?;
         let mut result: Vec<Arc<RSymbol>> = Vec::new();
-        let mut cursor = ctx.tree.walk();
+        let mut cursor = tree.walk();
         loop {
             let node = cursor.node();
-            let source = &ctx.source[..];
+            let source = &source[..];
 
             if node.kind() == "program" {
                 cursor.goto_first_child();
             }
 
-            let mut parsed = parse(path.as_path(), source, cursor.node(), None);
+            let mut parsed = parse(&path, source, cursor.node(), None);
             result.append(&mut parsed);
 
             if !cursor.goto_next_sibling() {
@@ -355,5 +337,15 @@ impl<'a> Indexer<'a> {
         }
 
         Ok(result)
+    }
+
+    fn read_file_tree(path: &Path) -> Result<(Tree, Vec<u8>)> {
+        let source = fs::read(path)?;
+
+        let mut parser = Parser::new();
+        parser.set_language(language())?;
+        let tree = parser.parse(&source[..], None).unwrap();
+
+        Ok((tree, source))
     }
 }
