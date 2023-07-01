@@ -3,8 +3,6 @@ use std::{path::Path, sync::Arc};
 use log::error;
 use tree_sitter::Node;
 
-use itertools::Itertools;
-
 use crate::types::{RSymbol, RConstant};
 
 use super::types::{NodeKind, SCOPE_DELIMITER};
@@ -20,9 +18,9 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
         *node
     };
 
-    let scopes = match &parent {
+    let scope = match &parent {
         Some(p) => match &**p {
-            RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
+            RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scope),
             _ => None,
         },
 
@@ -30,14 +28,17 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
     };
     let text = node.utf8_text(source).unwrap().to_string();
 
-    let name = match scopes {
-        Some(s) => s.iter().join(SCOPE_DELIMITER) + SCOPE_DELIMITER + &text,
+    let name = match scope {
+        Some(s) => s.to_string() + SCOPE_DELIMITER + &text,
         None => text,
     };
+
+    let scope = scope.map(|s| s.join(&(&name).into())).unwrap_or_default();
 
     Some(RSymbol::Constant(RConstant {
         file: file.to_owned(),
         name,
+        scope,
         location: node.start_position(),
         parent,
     }))

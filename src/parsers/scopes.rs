@@ -3,12 +3,12 @@ use tree_sitter::Node;
 
 use crate::parsers::types::GLOBAL_SCOPE_VALUE;
 
-use super::types::{NodeKind, NodeName};
+use super::types::{NodeKind, NodeName, Scope};
 
 /*
  * Gets the scope of the enclosing classes and modules.
  * */
-pub fn get_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+pub fn get_context_scope(node: &Node, source: &[u8]) -> Scope {
     let mut scopes = Vec::new();
 
     // find out if node is part of the class/module scope resolution
@@ -49,13 +49,17 @@ pub fn get_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
         }
     }
 
-    scopes.into_iter().rev().flatten().collect()
+    scopes.into_iter()
+        .rev()
+        .fold(Scope::new(vec![]), |acc, s| acc.join(&s))
+
+    // Scope::new(scopes.into_iter().rev().flatten().collect())
 }
 
 /*
  * Get the scope prior to the constant, e.g. if node is B in A::B::C the function will return [B, A].
  */
-pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b str> {
+pub fn get_parent_scope_resolution(node: &Node, source: &[u8]) -> Scope {
     let node = if node.kind() == NodeKind::ScopeResolution {
         node.child_by_field_name(NodeName::Name).unwrap()
     } else {
@@ -67,7 +71,7 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
     let parent = node.parent().unwrap();
     if parent.kind() != NodeKind::ScopeResolution {
         // single constant without a scope
-        return vec![node.utf8_text(source).unwrap()];
+        return Scope::from(node.utf8_text(source).unwrap());
     }
 
     let scope_node = parent.child_by_field_name(NodeName::Scope);
@@ -78,7 +82,7 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
 
     // it's the first constant in the "scope_resolution", just return it (e.g. A in A::B::C)
     if is_scope {
-        return vec![node.utf8_text(source).unwrap()];
+        return Scope::from(node.utf8_text(source).unwrap());
     }
 
     // go down from the current node to get scopes on the left (e.g. A::B::C in A::B::C::D if
@@ -117,7 +121,7 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
                             "Couldn't get parent scope resolution for definition: {}",
                             node.utf8_text(source).unwrap()
                         );
-                        return vec![];
+                        return Scope::new(vec![]);
                     }
 
                     _ => panic!(
@@ -131,13 +135,13 @@ pub fn get_parent_scope_resolution<'b>(node: &Node, source: &'b [u8]) -> Vec<&'b
     }
 
     scopes.reverse();
-    scopes
+    Scope::from(scopes)
 }
 
 /*
  * Get the scope after the constant, e.g. if node is B in A::B::C the function will return [B, C].
  */
-pub fn get_child_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+pub fn get_child_scope_resolution(node: &Node, source: &[u8]) -> Scope {
     let node = if node.kind() == NodeKind::ScopeResolution {
         node.child_by_field_name(NodeName::Name).unwrap()
     } else {
@@ -148,7 +152,7 @@ pub fn get_child_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a 
     let parent = node.parent().unwrap();
     if parent.kind() != NodeKind::ScopeResolution {
         // single constant without a scope
-        return vec![node.utf8_text(source).unwrap()];
+        return Scope::from(node.utf8_text(source).unwrap());
     }
 
     let scope_node = parent.child_by_field_name(NodeName::Scope);
@@ -173,35 +177,31 @@ pub fn get_child_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a 
         }
     }
 
-    scopes
+    Scope::from(scopes)
 }
 
 /*
  * Get both parent and child scopes of the scope resolution.
  */
-pub fn get_full_scope_resolution<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+pub fn get_full_scope_resolution(node: &Node, source: &[u8]) -> Scope {
     let child_scopes = get_child_scope_resolution(node, source);
-    let parent_scopes = get_parent_scope_resolution(node, source);
+    let mut parent_scopes = get_parent_scope_resolution(node, source);
 
-    parent_scopes
-        .into_iter()
-        .chain(child_scopes.into_iter().skip(1))
-        .collect()
+    parent_scopes.remove_last();
+    parent_scopes.join(&child_scopes)
 }
 
 /*
  * Get combined context scope and full scope resolution.
  */
-pub fn get_full_and_context_scope<'a>(node: &Node, source: &'a [u8]) -> Vec<&'a str> {
+pub fn get_full_and_context_scope(node: &Node, source: &[u8]) -> Scope {
     let full_scope = get_full_scope_resolution(node, source);
 
-    if full_scope.first().map(|s| *s == GLOBAL_SCOPE_VALUE).unwrap_or(false) {
+    if full_scope.is_global() {
         return full_scope;
     }
 
-    let context_scope = get_context_scope(node, source);
-
-    context_scope.into_iter().chain(full_scope).collect()
+    get_context_scope(node, source)
 }
 
 #[cfg(test)]
@@ -463,7 +463,7 @@ end
 
     fn test<'a, F>(source: &str, point: &Point, expected_values: &[&'a str], f: F)
     where
-        F: FnOnce(&Node) -> Vec<&'a str>,
+        F: FnOnce(&Node) -> Scope
     {
         let parsed = parse_source(source);
         let node = parsed.root_node().descendant_for_point_range(*point, *point).unwrap();
@@ -480,4 +480,3 @@ end
         parser.parse(source.as_bytes(), None).unwrap()
     }
 }
-

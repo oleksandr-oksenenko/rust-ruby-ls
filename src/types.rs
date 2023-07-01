@@ -2,6 +2,8 @@ use std::{path::{Path, PathBuf}, sync::Arc};
 
 use tree_sitter::Point;
 
+use crate::parsers::types::Scope;
+
 #[allow(dead_code)]
 #[derive(PartialEq, Eq)]
 pub enum RSymbol {
@@ -39,6 +41,19 @@ impl RSymbol {
             RSymbol::Variable(variable) => &variable.name,
             RSymbol::GlobalVariable(variable) => &variable.name,
             RSymbol::ClassVariable(variable) => &variable.name,
+        }
+    }
+
+    pub fn full_scope(&self) -> &Scope {
+        match self {
+            RSymbol::Class(s) => &s.scope,
+            RSymbol::Module(s) => &s.scope,
+            RSymbol::Method(s) => &s.scope,
+            RSymbol::SingletonMethod(s) => &s.scope,
+            RSymbol::Constant(s) => &s.scope,
+            RSymbol::Variable(s) => &s.scope,
+            RSymbol::GlobalVariable(s) => &s.scope,
+            RSymbol::ClassVariable(s) => &s.scope,
         }
     }
 
@@ -100,9 +115,9 @@ impl std::fmt::Debug for RSymbol {
 pub struct RClass {
     pub file: PathBuf,
     pub name: String,
+    pub scope: Scope,
     pub location: Point,
-    pub scopes: Vec<String>,
-    pub superclass_scopes: Vec<String>,
+    pub superclass_scopes: Scope,
     pub parent: Option<Arc<RSymbol>>,
 }
 
@@ -110,6 +125,7 @@ pub struct RClass {
 pub struct RMethod {
     pub file: PathBuf,
     pub name: String,
+    pub scope: Scope,
     pub location: Point,
     pub parameters: Vec<RMethodParam>,
     pub parent: Option<Arc<RSymbol>>,
@@ -133,6 +149,7 @@ pub struct MethodParam {
 pub struct RConstant {
     pub file: PathBuf,
     pub name: String,
+    pub scope: Scope,
     pub location: Point,
     pub parent: Option<Arc<RSymbol>>,
 }
@@ -141,6 +158,7 @@ pub struct RConstant {
 pub struct RVariable {
     pub file: PathBuf,
     pub name: String,
+    pub scope: Scope,
     pub location: Point,
     pub parent: Option<Arc<RSymbol>>,
 }

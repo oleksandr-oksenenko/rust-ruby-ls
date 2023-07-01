@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use tree_sitter::Node;
 
-use crate::{parsers::{types::{NodeKind, NodeName}, constants::parse_constant}, types::{RSymbol, RVariable}};
+use crate::{parsers::{types::{NodeKind, NodeName, Scope}, constants::parse_constant}, types::{RSymbol, RVariable}};
 
 pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Option<Vec<RSymbol>> {
     assert_eq!(node.kind(), NodeKind::Assignment);
@@ -29,9 +29,11 @@ pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<A
 
         NodeKind::GlobalVariable => {
             let name = lhs.utf8_text(source).unwrap().to_string();
+            let scope: Scope = (&name).into();
             Some(vec![RSymbol::GlobalVariable(RVariable {
                 file: file.to_path_buf(),
                 name,
+                scope,
                 location: node.start_position(),
                 parent: None,
             })])

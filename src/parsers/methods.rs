@@ -5,14 +5,14 @@ use tree_sitter::{Node, Query, QueryCursor};
 
 use itertools::Itertools;
 
-use crate::{parsers::types::{NodeKind, NodeName, SCOPE_DELIMITER}, types::{RSymbol, RMethodParam, MethodParam, RMethod}};
+use crate::{parsers::types::{NodeKind, NodeName, SCOPE_DELIMITER, Scope}, types::{RSymbol, RMethodParam, MethodParam, RMethod}};
 
 pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
     assert!(node.kind() == NodeKind::Method || node.kind() == NodeKind::SingletonMethod);
 
-    let scopes = match &parent {
+    let scope = match &parent {
         Some(p) => match &**p {
-            RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scopes),
+            RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scope),
             _ => None,
         },
 
@@ -21,8 +21,8 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
     let name = name_node.utf8_text(source).unwrap().to_string();
-    let name = match scopes {
-        Some(s) => s.iter().join(SCOPE_DELIMITER) + SCOPE_DELIMITER + &name,
+    let name = match scope {
+        Some(s) => s.to_string() + SCOPE_DELIMITER + &name,
         None => name,
     };
 
@@ -65,9 +65,14 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
         params.push(param);
     }
 
+    let scope = scope
+        .map(|s| s.join(&(&name).into()))
+        .unwrap_or(Scope::from(&name));
+
     RSymbol::Method(RMethod {
         file: file.to_owned(),
         name,
+        scope,
         location: name_node.start_position(),
         parameters: params,
         parent,

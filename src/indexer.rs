@@ -24,7 +24,7 @@ use crate::ruby_env_provider::RubyEnvProvider;
 use crate::ruby_filename_converter::RubyFilenameConverter;
 use crate::symbols_matcher::SymbolsMatcher;
 
-use crate::parsers::types::{NodeKind, NodeName, GLOBAL_SCOPE_VALUE, SCOPE_DELIMITER};
+use crate::parsers::types::{NodeKind, NodeName, Scope};
 use crate::types::{RSymbol, RVariable};
 
 struct IndexingContext {
@@ -145,6 +145,7 @@ impl<'a> Indexer<'a> {
                 let symbol = Arc::new(RSymbol::Variable(RVariable {
                     file: file.to_path_buf(),
                     name: variable_def.utf8_text(source).unwrap().to_string(),
+                    scope: Scope::new(vec![]),
                     location: variable_def.start_position(),
                     parent: None,
                 }));
@@ -225,45 +226,23 @@ impl<'a> Indexer<'a> {
         info!("Trying to find a constant");
         // traverse down till we hit the whole symbol name
         let constant_scope = get_parent_scope_resolution(node, source);
-        let is_global = constant_scope
-            .first()
-            .map(|s| *s == GLOBAL_SCOPE_VALUE)
-            .unwrap_or(false);
-        let constant_scope = if is_global {
-            constant_scope.into_iter().skip(1).join(SCOPE_DELIMITER)
-        } else {
-            constant_scope.into_iter().join(SCOPE_DELIMITER)
-        };
 
-        let context_scope = get_context_scope(node, source)
-            .into_iter()
-            .chain([constant_scope.as_str()])
-            .join(SCOPE_DELIMITER);
+        let context_scope = get_context_scope(node, source).join(&constant_scope);
 
-        let file_scope = self.ruby_filename_converter.path_to_scope(file);
-        let mut file_scope = file_scope.unwrap_or(vec![]);
-        file_scope.pop();
-        let file_scope = file_scope
-            .iter()
-            .map(|s| s.as_str())
-            .chain([constant_scope.as_str()])
-            .join(SCOPE_DELIMITER);
+        let mut file_scope = self.ruby_filename_converter.path_to_scope(file).unwrap_or(Scope::new(vec![]));
+        file_scope.remove_last();
+        let file_scope = file_scope.join(&constant_scope);
 
         let symbols = self
             .symbols
             .iter()
             .filter(|s| matches!(***s, RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)));
 
-        let results = if is_global {
+        let results = if constant_scope.is_global() {
             info!("Global scope, searching for {constant_scope}");
             symbols
-                .filter_map(|s| {
-                    if s.name() == constant_scope {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
+                .filter(|s| s.full_scope() == &constant_scope)
+                .cloned()
                 .collect()
         } else {
             info!("Searching for {context_scope} or {file_scope} or {context_scope} in the same file");
@@ -271,9 +250,9 @@ impl<'a> Indexer<'a> {
             let found_symbols: Vec<Arc<RSymbol>> = symbols
                 .clone()
                 .filter_map(|s| {
-                    let name = s.name();
+                    let name = s.full_scope();
 
-                    if name == context_scope || name == file_scope || (name == constant_scope && s.file() == file) {
+                    if name == &context_scope || name == &file_scope || (name == &constant_scope && s.file() == file) {
                         Some(s.clone())
                     } else {
                         None
@@ -287,7 +266,7 @@ impl<'a> Indexer<'a> {
                 symbols
                     .clone()
                     .filter_map(|s| {
-                        if constant_scope == s.name() {
+                        if &constant_scope == s.full_scope() {
                             Some(s.clone())
                         } else {
                             None

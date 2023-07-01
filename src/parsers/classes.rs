@@ -3,9 +3,7 @@ use std::{path::Path, sync::Arc};
 use log::debug;
 use tree_sitter::Node;
 
-use itertools::Itertools;
-
-use crate::{parsers::{types::{NodeKind, NodeName, SCOPE_DELIMITER}, scopes::get_full_and_context_scope, general::parse}, types::{RSymbol, RClass}};
+use crate::{parsers::{types::{NodeKind, NodeName, Scope}, scopes::get_full_and_context_scope, general::parse}, types::{RSymbol, RClass}};
 
 pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Vec<Arc<RSymbol>> {
     debug!("Parsing {:?} at {:?}", file, node.start_position());
@@ -14,19 +12,18 @@ pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RS
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
     let scopes = get_full_and_context_scope(&name_node, source);
-    let name = scopes.iter().join(SCOPE_DELIMITER);
+    let name = scopes.to_string();
     let superclass_scopes = node
         .child_by_field_name(NodeName::Superclass)
         .and_then(|n| n.child_by_field_name(NodeName::Name))
         .map(|n| get_full_and_context_scope(&n, source))
-        .map(|s| s.into_iter().map(|s| s.to_string()).collect())
-        .unwrap_or(Vec::default());
+        .unwrap_or(Scope::default());
 
     let rclass = RClass {
         file: file.to_path_buf(),
         name,
+        scope: scopes,
         location: name_node.start_position(),
-        scopes: scopes.into_iter().map(|s| s.to_string()).collect(),
         superclass_scopes,
         parent,
     };

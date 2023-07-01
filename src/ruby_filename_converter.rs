@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 
 use itertools::Itertools;
 
-use crate::ruby_env_provider::RubyEnvProvider;
+use crate::{ruby_env_provider::RubyEnvProvider, parsers::types::Scope};
 
 const RAILS_ROOT_PATHS: &[&str] = &["db", "spec"];
 
@@ -36,7 +36,7 @@ impl RubyFilenameConverter {
         })
     }
 
-    pub fn path_to_scope(&self, path: &Path) -> Result<Vec<String>> {
+    pub fn path_to_scope(&self, path: &Path) -> Result<Scope> {
         let local_path = path.strip_prefix(&self.root_path)?.with_extension("");
 
         let local_path = self
@@ -58,9 +58,11 @@ impl RubyFilenameConverter {
             return failures.into_iter().next().unwrap();
         }
 
-        let result = sucesses.into_iter().map(Self::name_to_scope).collect();
+        let result: Vec<String> = sucesses.into_iter()
+            .map(Self::name_to_scope)
+            .collect();
 
-        Ok(result)
+        Ok(Scope::from(result))
     }
 
     fn name_to_scope(name: &str) -> String {
