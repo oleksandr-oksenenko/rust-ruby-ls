@@ -2,7 +2,13 @@ use std::{path::Path, sync::Arc};
 
 use tree_sitter::Node;
 
-use crate::{parsers::{types::{NodeKind, NodeName, Scope}, constants::parse_constant}, types::{RSymbol, RVariable}};
+use crate::{
+    parsers::{
+        constants::parse_constant,
+        types::{NodeKind, NodeName, Scope},
+    },
+    types::{RSymbol, RVariable},
+};
 
 pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Option<Vec<RSymbol>> {
     assert_eq!(node.kind(), NodeKind::Assignment);
@@ -69,5 +75,3 @@ pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<A
         }
     }
 }
-
-

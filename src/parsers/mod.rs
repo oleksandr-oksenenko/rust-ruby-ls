@@ -1,8 +1,8 @@
-pub mod types;
-pub mod scopes;
-pub mod classes;
-pub mod methods;
 pub mod assignments;
-pub mod identifiers;
+pub mod classes;
 pub mod constants;
 pub mod general;
+pub mod identifiers;
+pub mod methods;
+pub mod scopes;
+pub mod types;

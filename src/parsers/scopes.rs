@@ -49,9 +49,7 @@ pub fn get_context_scope(node: &Node, source: &[u8]) -> Scope {
         }
     }
 
-    scopes.into_iter()
-        .rev()
-        .fold(Scope::new(vec![]), |acc, s| acc.join(&s))
+    scopes.into_iter().rev().fold(Scope::new(vec![]), |acc, s| acc.join(&s))
 
     // Scope::new(scopes.into_iter().rev().flatten().collect())
 }
@@ -124,11 +122,9 @@ pub fn get_parent_scope_resolution(node: &Node, source: &[u8]) -> Scope {
                         return Scope::new(vec![]);
                     }
 
-                    _ => panic!(
-                        "Impossible kind in scope resolution: {}: {}",
-                        p.to_sexp(),
-                        p.utf8_text(source).unwrap()
-                    ),
+                    _ => {
+                        panic!("Impossible kind in scope resolution: {}: {}", p.to_sexp(), p.utf8_text(source).unwrap())
+                    }
                 }
             }
         }
@@ -230,32 +226,35 @@ end
 
         #[test]
         fn get_child_scope_resolution_test() {
-            let point = Point { row: 3, column: 18 };
+            let point = Point {
+                row: 3,
+                column: 18,
+            };
             let expected_scopes = vec!["F", "G"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_child_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_child_scope_resolution(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_child_scope_resolution_test_2() {
-            let point = Point { row: 6, column: 16 };
+            let point = Point {
+                row: 6,
+                column: 16,
+            };
             let expected_scopes = vec!["V", "C"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_child_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_child_scope_resolution(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_child_scope_resolution_test_3() {
-            let point = Point { row: 1, column: 13 };
+            let point = Point {
+                row: 1,
+                column: 13,
+            };
             let expected_scopes = vec!["X", "Y", "Z"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_child_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_child_scope_resolution(n, SOURCE.as_bytes()))
         }
     }
 
@@ -265,42 +264,46 @@ end
 
         #[test]
         fn get_parent_scope_resolution_test() {
-            let point = Point { row: 3, column: 18 };
+            let point = Point {
+                row: 3,
+                column: 18,
+            };
             let expected_scopes = vec!["E", "F"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_parent_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_parent_scope_resolution(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_parent_scope_resolution_test_2() {
-            let point = Point { row: 6, column: 19 };
+            let point = Point {
+                row: 6,
+                column: 19,
+            };
             let expected_scopes = vec!["V", "C"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_parent_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_parent_scope_resolution(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_parent_scope_resolution_test_3() {
-            let point = Point { row: 1, column: 19 };
+            let point = Point {
+                row: 1,
+                column: 19,
+            };
             let expected_scopes = vec!["X", "Y", "Z"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_parent_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_parent_scope_resolution(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_parent_scope_resolution_test_4() {
-            let point = Point { row: 7, column: 29 };
+            let point = Point {
+                row: 7,
+                column: 29,
+            };
             let expected_scopes = vec!["$GLOBAL", "G", "S"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_parent_scope_resolution(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_parent_scope_resolution(n, SOURCE.as_bytes()))
         }
     }
 
@@ -310,57 +313,85 @@ end
 
         #[test]
         fn get_full_scope_resolution_test() {
-            let points = [Point { row: 1, column: 6 }, Point { row: 1, column: 9 }];
+            let points = [
+                Point {
+                    row: 1,
+                    column: 6,
+                },
+                Point {
+                    row: 1,
+                    column: 9,
+                },
+            ];
             let expected_scopes = vec!["A", "B"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_full_scope_resolution(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_full_scope_resolution(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_full_scope_resolution_test_2() {
-            let points = [Point { row: 2, column: 11 }, Point { row: 2, column: 14 }];
+            let points = [
+                Point {
+                    row: 2,
+                    column: 11,
+                },
+                Point {
+                    row: 2,
+                    column: 14,
+                },
+            ];
             let expected_scopes = vec!["C", "D"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_full_scope_resolution(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_full_scope_resolution(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_full_scope_resolution_test_3() {
             let points = [
-                Point { row: 3, column: 15 },
-                Point { row: 3, column: 18 },
-                Point { row: 3, column: 21 },
+                Point {
+                    row: 3,
+                    column: 15,
+                },
+                Point {
+                    row: 3,
+                    column: 18,
+                },
+                Point {
+                    row: 3,
+                    column: 21,
+                },
             ];
             let expected_scopes = vec!["E", "F", "G"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_full_scope_resolution(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_full_scope_resolution(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_full_scope_resolution_test_4() {
             let points = [
-                Point { row: 4, column: 18 },
-                Point { row: 4, column: 21 },
-                Point { row: 4, column: 24 },
+                Point {
+                    row: 4,
+                    column: 18,
+                },
+                Point {
+                    row: 4,
+                    column: 21,
+                },
+                Point {
+                    row: 4,
+                    column: 24,
+                },
             ];
             let expected_scopes = vec!["H", "I", "J"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_full_scope_resolution(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_full_scope_resolution(n, SOURCE.as_bytes()))
             }
         }
     }
@@ -371,57 +402,85 @@ end
 
         #[test]
         fn get_context_scope_test() {
-            let points = [Point { row: 2, column: 11 }, Point { row: 2, column: 14 }];
+            let points = [
+                Point {
+                    row: 2,
+                    column: 11,
+                },
+                Point {
+                    row: 2,
+                    column: 14,
+                },
+            ];
             let expected_scopes = vec!["A", "B"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_context_scope(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_context_scope(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_context_scope_test_2() {
             let points = [
-                Point { row: 3, column: 15 },
-                Point { row: 3, column: 18 },
-                Point { row: 3, column: 21 },
+                Point {
+                    row: 3,
+                    column: 15,
+                },
+                Point {
+                    row: 3,
+                    column: 18,
+                },
+                Point {
+                    row: 3,
+                    column: 21,
+                },
             ];
             let expected_scopes = vec!["A", "B", "C", "D"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_context_scope(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_context_scope(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_context_scope_test_3() {
             let points = [
-                Point { row: 4, column: 18 },
-                Point { row: 4, column: 21 },
-                Point { row: 4, column: 24 },
+                Point {
+                    row: 4,
+                    column: 18,
+                },
+                Point {
+                    row: 4,
+                    column: 21,
+                },
+                Point {
+                    row: 4,
+                    column: 24,
+                },
             ];
             let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_context_scope(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_context_scope(n, SOURCE.as_bytes()))
             }
         }
 
         #[test]
         fn get_context_scope_test_4() {
-            let points = [Point { row: 5, column: 18 }, Point { row: 5, column: 21 }];
+            let points = [
+                Point {
+                    row: 5,
+                    column: 18,
+                },
+                Point {
+                    row: 5,
+                    column: 21,
+                },
+            ];
             let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
             for point in points {
-                test(SOURCE, &point, &expected_scopes, |n| {
-                    get_context_scope(n, SOURCE.as_bytes())
-                })
+                test(SOURCE, &point, &expected_scopes, |n| get_context_scope(n, SOURCE.as_bytes()))
             }
         }
     }
@@ -432,38 +491,41 @@ end
 
         #[test]
         fn get_full_and_context_scope_test() {
-            let point = Point { row: 6, column: 16 };
+            let point = Point {
+                row: 6,
+                column: 16,
+            };
             let expected_scopes = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "V", "C"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_full_and_context_scope(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_full_and_context_scope(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_full_and_context_scope_test_2() {
-            let point = Point { row: 2, column: 11 };
+            let point = Point {
+                row: 2,
+                column: 11,
+            };
             let expected_scopes = vec!["A", "B", "C", "D"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_full_and_context_scope(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_full_and_context_scope(n, SOURCE.as_bytes()))
         }
 
         #[test]
         fn get_full_and_context_scope_test_3() {
-            let point = Point { row: 7, column: 29 };
+            let point = Point {
+                row: 7,
+                column: 29,
+            };
             let expected_scopes = vec![GLOBAL_SCOPE_VALUE, "G", "S"];
 
-            test(SOURCE, &point, &expected_scopes, |n| {
-                get_full_and_context_scope(n, SOURCE.as_bytes())
-            })
+            test(SOURCE, &point, &expected_scopes, |n| get_full_and_context_scope(n, SOURCE.as_bytes()))
         }
     }
 
     fn test<'a, F>(source: &str, point: &Point, expected_values: &[&'a str], f: F)
     where
-        F: FnOnce(&Node) -> Scope
+        F: FnOnce(&Node) -> Scope,
     {
         let parsed = parse_source(source);
         let node = parsed.root_node().descendant_for_point_range(*point, *point).unwrap();

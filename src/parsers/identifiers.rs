@@ -27,4 +27,3 @@ pub fn get_identifier_context<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 
     None
 }
-

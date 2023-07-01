@@ -22,13 +22,13 @@ use lsp_types::{
     ServerCapabilities, SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams,
 };
 
-mod types;
 mod indexer;
 mod parsers;
 mod progress_reporter;
 mod ruby_env_provider;
 mod ruby_filename_converter;
 mod symbols_matcher;
+mod types;
 
 use indexer::*;
 use progress_reporter::ProgressReporter;
@@ -40,11 +40,7 @@ fn main() -> Result<()> {
         .unwrap();
     let config = log4rs::Config::builder()
         .appender(log4rs::config::Appender::builder().build("file", Box::new(file)))
-        .build(
-            log4rs::config::Root::builder()
-                .appender("file")
-                .build(log::LevelFilter::Info),
-        )
+        .build(log4rs::config::Root::builder().appender("file").build(log::LevelFilter::Info))
         .unwrap();
     log4rs::init_config(config).unwrap();
 
@@ -94,7 +90,9 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
                             continue;
                         }
 
-                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::JsonError {
+                            ..
+                        }) => error!("JsonError"),
                         Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
                     },
 
@@ -104,7 +102,9 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
                             continue;
                         }
 
-                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::JsonError {
+                            ..
+                        }) => error!("JsonError"),
                         Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
                     },
 
@@ -114,7 +114,9 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
                             continue;
                         }
 
-                        Err(ExtractError::JsonError { .. }) => error!("JsonError"),
+                        Err(ExtractError::JsonError {
+                            ..
+                        }) => error!("JsonError"),
                         Err(ExtractError::MethodMismatch(_)) => error!("MethodMismatch"),
                     },
 
@@ -154,12 +156,8 @@ fn handle_document_symbols_request(
     info!("[#{id}] Got document/symbol request, params = {params:?}");
 
     let path = params.text_document.uri.to_file_path().unwrap();
-    let symbols: Vec<SymbolInformation> = indexer
-        .file_symbols(path.as_path())
-        .unwrap_or(&Vec::new())
-        .iter()
-        .map(convert_to_lsp_sym_info)
-        .collect();
+    let symbols: Vec<SymbolInformation> =
+        indexer.file_symbols(path.as_path()).unwrap_or(&Vec::new()).iter().map(convert_to_lsp_sym_info).collect();
 
     let result = serde_json::to_value(symbols).unwrap();
 
@@ -185,11 +183,8 @@ fn handle_workspace_symbols_request(
 
     let start = Instant::now();
 
-    let symbols: Vec<SymbolInformation> = indexer_v2
-        .fuzzy_find_symbol(&params.query)
-        .iter()
-        .map(convert_to_lsp_sym_info)
-        .collect();
+    let symbols: Vec<SymbolInformation> =
+        indexer_v2.fuzzy_find_symbol(&params.query).iter().map(convert_to_lsp_sym_info).collect();
 
     let result = serde_json::to_value(symbols).unwrap();
     let resp = Response {
@@ -216,12 +211,7 @@ fn handle_goto_definition_request(
 
     let start = Instant::now();
 
-    let file = params
-        .text_document_position_params
-        .text_document
-        .uri
-        .to_file_path()
-        .unwrap();
+    let file = params.text_document_position_params.text_document.uri.to_file_path().unwrap();
     let position = params.text_document_position_params.position;
     let position = Point {
         row: position.line.try_into()?,
@@ -286,7 +276,10 @@ fn convert_to_lsp_sym_info(rsymbol: impl AsRef<RSymbol>) -> SymbolInformation {
         kind,
         tags: None,
         deprecated: None,
-        location: Location { uri: url, range },
+        location: Location {
+            uri: url,
+            range,
+        },
         container_name: None,
     }
 }

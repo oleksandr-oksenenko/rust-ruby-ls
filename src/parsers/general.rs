@@ -5,7 +5,12 @@ use tree_sitter::Node;
 
 use crate::types::RSymbol;
 
-use super::{types::NodeKind, methods::{parse_method, parse_singleton_method}, assignments::parse_assignment, classes::parse_class};
+use super::{
+    assignments::parse_assignment,
+    classes::parse_class,
+    methods::{parse_method, parse_singleton_method},
+    types::NodeKind,
+};
 
 pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Vec<Arc<RSymbol>> {
     let node_kind = match node.kind().try_into() {
@@ -29,11 +34,9 @@ pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>
             vec![Arc::new(parse_singleton_method(file, source, node, parent))]
         }
 
-        NodeKind::Assignment => parse_assignment(file, source, node, parent)
-            .unwrap_or(Vec::new())
-            .into_iter()
-            .map(Arc::new)
-            .collect(),
+        NodeKind::Assignment => {
+            parse_assignment(file, source, node, parent).unwrap_or(Vec::new()).into_iter().map(Arc::new).collect()
+        }
 
         NodeKind::Comment | NodeKind::Call => {
             // TODO: Implement
@@ -46,4 +49,3 @@ pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>
         }
     }
 }
-

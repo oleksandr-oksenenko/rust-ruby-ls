@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 use crate::parsers::general::parse;
 use crate::parsers::identifiers::get_identifier_context;
 use crate::parsers::methods::get_method_variable_definition;
-use crate::parsers::scopes::{get_parent_scope_resolution, get_context_scope};
+use crate::parsers::scopes::{get_context_scope, get_parent_scope_resolution};
 use crate::progress_reporter::ProgressReporter;
 use crate::ruby_env_provider::RubyEnvProvider;
 use crate::ruby_filename_converter::RubyFilenameConverter;
@@ -72,15 +72,12 @@ impl<'a> Indexer<'a> {
     pub fn find_definition(&self, file: &Path, position: Point) -> Result<Vec<Arc<RSymbol>>> {
         let (tree, source) = Self::read_file_tree(file)?;
 
-        let node = tree.root_node();
-        let node = node
+        let node = tree
+            .root_node()
             .descendant_for_point_range(position, position)
             .ok_or(anyhow!("Failed to find node of definition"))?;
 
-        let node_kind = node
-            .kind()
-            .try_into()
-            .with_context(|| format!("Unknown node kind: {}", node.kind()))?;
+        let node_kind = node.kind().try_into().with_context(|| format!("Unknown node kind: {}", node.kind()))?;
 
         match node_kind {
             NodeKind::Constant => Ok(self.find_constant(&node, file, &source)),
@@ -91,19 +88,11 @@ impl<'a> Indexer<'a> {
     }
 
     fn find_identifier(&self, node: &Node, file: &Path, source: &[u8]) -> Result<Vec<Arc<RSymbol>>> {
-        info!(
-            "Trying to find an identifier in {:?} at {:?}",
-            file,
-            node.start_position()
-        );
+        info!("Trying to find an identifier in {:?} at {:?}", file, node.start_position());
         let identifier = node.utf8_text(source).unwrap();
 
         let parent = node.parent().with_context(|| {
-            format!(
-                "Failed to find parent for identifier in {:?} at {:?}",
-                file,
-                node.start_position()
-            )
+            format!("Failed to find parent for identifier in {:?} at {:?}", file, node.start_position())
         })?;
 
         let context_node = get_identifier_context(node).ok_or(anyhow!(
@@ -119,12 +108,11 @@ impl<'a> Indexer<'a> {
             }
 
             NodeKind::Method | NodeKind::SingletonMethod => {
-                let variable_def =
-                    get_method_variable_definition(node, &context_node, file, source).ok_or(anyhow!(
-                        "Failed to find variable definition in {:?} at {:?}",
-                        file,
-                        node.start_position()
-                    ))?;
+                let variable_def = get_method_variable_definition(node, &context_node, file, source).ok_or(anyhow!(
+                    "Failed to find variable definition in {:?} at {:?}",
+                    file,
+                    node.start_position()
+                ))?;
                 let symbol = Arc::new(RSymbol::Variable(RVariable {
                     file: file.to_path_buf(),
                     name: variable_def.utf8_text(source).unwrap().to_string(),
@@ -148,9 +136,7 @@ impl<'a> Indexer<'a> {
         let receiver_kind = receiver.map(|n| n.kind());
         info!("Trying to find method: {method_name}, receiver kind = {receiver_kind:?}");
 
-        let receiver_definitions = receiver
-            .map(|r| self.find_definition(file, r.start_position()))
-            .transpose()?;
+        let receiver_definitions = receiver.map(|r| self.find_definition(file, r.start_position())).transpose()?;
 
         Ok(self
             .symbols
@@ -158,23 +144,12 @@ impl<'a> Indexer<'a> {
             // TODO: depends on the type of receiver, change after adding more definition types
             .filter(|s| matches!(***s, RSymbol::SingletonMethod(_)))
             .filter(|s| {
-                let receiver_definitions = match &receiver_definitions {
-                    None => return true,
-                    Some(rd) => rd,
-                };
-                let parent = match s.parent() {
-                    None => return true,
-                    Some(p) => p,
-                };
-                if receiver_definitions.is_empty() {
-                    return true;
-                }
-                receiver_definitions.contains(parent)
+                let defs = if let Some(rd) = &receiver_definitions { rd } else { return true };
+                let parent = if let Some(p) = s.parent() { p } else { return true };
+
+                defs.contains(parent)
             })
-            .filter(|s| {
-                let last_scope = s.name().split("::").last().unwrap();
-                method_name == last_scope
-            })
+            .filter(|s| s.full_scope().last().map(|l| l == method_name).unwrap_or(false))
             .cloned()
             .collect())
     }
@@ -192,16 +167,8 @@ impl<'a> Indexer<'a> {
         Ok(self
             .symbols
             .iter()
-            .filter_map(|s| {
-                let global_var = matches!(**s, RSymbol::GlobalVariable(_));
-                let name_equals = s.name() == name;
-
-                if global_var && name_equals {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            })
+            .filter(|s| matches!(***s, RSymbol::GlobalVariable(_) if s.name() == name))
+            .cloned()
             .collect())
     }
 
@@ -223,39 +190,23 @@ impl<'a> Indexer<'a> {
 
         let results = if constant_scope.is_global() {
             info!("Global scope, searching for {constant_scope}");
-            symbols
-                .filter(|s| s.full_scope() == &constant_scope)
-                .cloned()
-                .collect()
+            symbols.filter(|s| s.full_scope() == &constant_scope).cloned().collect()
         } else {
             info!("Searching for {context_scope} or {file_scope} or {context_scope} in the same file");
             // search in contexts first
             let found_symbols: Vec<Arc<RSymbol>> = symbols
                 .clone()
-                .filter_map(|s| {
+                .filter(|s| {
                     let name = s.full_scope();
-
-                    if name == &context_scope || name == &file_scope || (name == &constant_scope && s.file() == file) {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
+                    name == &context_scope || name == &file_scope || (name == &constant_scope && s.file() == file)
                 })
+                .cloned()
                 .collect();
 
             // then global
             if found_symbols.is_empty() {
                 info!("Haven't found anything, searching for global {constant_scope}");
-                symbols
-                    .clone()
-                    .filter_map(|s| {
-                        if &constant_scope == s.full_scope() {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
+                symbols.clone().filter(|s| s.full_scope() == &constant_scope).cloned().collect()
             } else {
                 found_symbols
             }
@@ -297,9 +248,7 @@ impl<'a> Indexer<'a> {
     }
 
     fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {
-        let progress_token = self
-            .progress_reporter
-            .send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
+        let progress_token = self.progress_reporter.send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
 
         let classes: Vec<Arc<RSymbol>> = WalkDir::new(dir)
             .into_iter()
@@ -310,8 +259,7 @@ impl<'a> Indexer<'a> {
             .flat_map(|entry| Self::index_file_cursor(entry.into_path()).unwrap())
             .collect();
 
-        self.progress_reporter
-            .send_progress_end(progress_token, format!("Indexing of {dir:?}"))?;
+        self.progress_reporter.send_progress_end(progress_token, format!("Indexing of {dir:?}"))?;
 
         Ok(classes)
     }

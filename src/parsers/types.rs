@@ -1,4 +1,4 @@
-use strum::{EnumString, AsRefStr, IntoStaticStr, Display};
+use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 
 use itertools::Itertools;
 
@@ -57,7 +57,7 @@ impl AsRef<[u8]> for NodeName {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct Scope {
-    scopes: Vec<String>
+    scopes: Vec<String>,
 }
 
 pub trait ScopeJoin<T> {
@@ -67,29 +67,24 @@ pub trait ScopeJoin<T> {
 impl Scope {
     pub fn new(scopes: Vec<String>) -> Scope {
         Scope {
-            scopes
+            scopes,
         }
     }
 
     pub fn is_global(&self) -> bool {
-        self.scopes.first()
-            .map(|s| s == GLOBAL_SCOPE_VALUE)
-            .unwrap_or(false)
+        self.scopes.first().map(|s| s == GLOBAL_SCOPE_VALUE).unwrap_or(false)
     }
 
     pub fn join(&self, rhs: &Scope) -> Scope {
-        let rhs = if rhs.is_global() {
-            rhs.scopes.iter().skip(1)
-        } else {
-            rhs.scopes.iter().skip(0)
-        };
+        let rhs = if rhs.is_global() { rhs.scopes.iter().skip(1) } else { rhs.scopes.iter().skip(0) };
 
-        let new_scopes = self.scopes.iter()
-            .chain(rhs)
-            .cloned()
-            .collect();
+        let new_scopes = self.scopes.iter().chain(rhs).cloned().collect();
 
         Scope::new(new_scopes)
+    }
+
+    pub fn last(&self) -> Option<&str> {
+        self.scopes.last().map(|s| s.as_str())
     }
 
     pub fn remove_last(&mut self) {
@@ -123,9 +118,7 @@ impl From<Vec<String>> for Scope {
 
 impl From<Vec<&str>> for Scope {
     fn from(value: Vec<&str>) -> Self {
-        let cloned = value.iter()
-            .map(|s| s.to_string())
-            .collect();
+        let cloned = value.iter().map(|s| s.to_string()).collect();
         Scope::new(cloned)
     }
 }
@@ -170,4 +163,3 @@ impl std::fmt::Display for Scope {
         write!(f, "Scope({})", str)
     }
 }
-

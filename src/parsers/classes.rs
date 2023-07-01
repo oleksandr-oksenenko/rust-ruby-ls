@@ -3,7 +3,14 @@ use std::{path::Path, sync::Arc};
 use log::debug;
 use tree_sitter::Node;
 
-use crate::{parsers::{types::{NodeKind, NodeName, Scope}, scopes::get_full_and_context_scope, general::parse}, types::{RSymbol, RClass}};
+use crate::{
+    parsers::{
+        general::parse,
+        scopes::get_full_and_context_scope,
+        types::{NodeKind, NodeName, Scope},
+    },
+    types::{RClass, RSymbol},
+};
 
 pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Vec<Arc<RSymbol>> {
     debug!("Parsing {:?} at {:?}", file, node.start_position());
@@ -53,4 +60,3 @@ pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RS
 
     result
 }
-

@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use log::error;
 use tree_sitter::Node;
 
-use crate::types::{RSymbol, RConstant};
+use crate::types::{RConstant, RSymbol};
 
 use super::types::{NodeKind, SCOPE_DELIMITER};
 
@@ -12,11 +12,7 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
         error!("{} instead of constant in {file:?} at {:?}", node.kind(), node.range());
     }
 
-    let node = if node.kind() == NodeKind::RestAssignment {
-        node.child(0).unwrap()
-    } else {
-        *node
-    };
+    let node = if node.kind() == NodeKind::RestAssignment { node.child(0).unwrap() } else { *node };
 
     let scope = match &parent {
         Some(p) => match &**p {
@@ -43,4 +39,3 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
         parent,
     }))
 }
-

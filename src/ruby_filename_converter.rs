@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 
 use itertools::Itertools;
 
-use crate::{ruby_env_provider::RubyEnvProvider, parsers::types::Scope};
+use crate::{parsers::types::Scope, ruby_env_provider::RubyEnvProvider};
 
 const RAILS_ROOT_PATHS: &[&str] = &["db", "spec"];
 
@@ -20,11 +20,8 @@ impl RubyFilenameConverter {
         let output = ruby_env_provider
             .run_context_command(AUTOLOAD_PATHS_CMD)
             .with_context(|| "Failed to run rails runner command")?;
-        let mut autoload_paths: Vec<String> = String::from_utf8(output)?
-            .split('\n')
-            .map(|s| s.to_string())
-            .unique()
-            .collect();
+        let mut autoload_paths: Vec<String> =
+            String::from_utf8(output)?.split('\n').map(|s| s.to_string()).unique().collect();
 
         let mut other_paths = RAILS_ROOT_PATHS.iter().map(|s| s.to_string()).collect();
 
@@ -39,28 +36,19 @@ impl RubyFilenameConverter {
     pub fn path_to_scope(&self, path: &Path) -> Result<Scope> {
         let local_path = path.strip_prefix(&self.root_path)?.with_extension("");
 
-        let local_path = self
-            .autoload_paths
-            .iter()
-            .find_map(|p| local_path.as_path().strip_prefix(p).ok())
-            .unwrap_or(&local_path);
+        let local_path =
+            self.autoload_paths.iter().find_map(|p| local_path.as_path().strip_prefix(p).ok()).unwrap_or(&local_path);
 
         let (sucesses, failures): (Vec<_>, Vec<_>) = local_path
             .iter()
-            .map(|os_str| {
-                os_str
-                    .to_str()
-                    .ok_or(Err(anyhow!("Couldn't convert from OsStr to str")))
-            })
+            .map(|os_str| os_str.to_str().ok_or(Err(anyhow!("Couldn't convert from OsStr to str"))))
             .partition_result();
 
         if !failures.is_empty() {
             return failures.into_iter().next().unwrap();
         }
 
-        let result: Vec<String> = sucesses.into_iter()
-            .map(Self::name_to_scope)
-            .collect();
+        let result: Vec<String> = sucesses.into_iter().map(Self::name_to_scope).collect();
 
         Ok(Scope::from(result))
     }
@@ -105,10 +93,7 @@ mod tests {
 
     #[test]
     fn test_name_to_scope() {
-        assert_eq!(
-            "ModuleOneTwoThree",
-            RubyFilenameConverter::name_to_scope("module_one_two_three")
-        );
+        assert_eq!("ModuleOneTwoThree", RubyFilenameConverter::name_to_scope("module_one_two_three"));
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tree_sitter::Point;
 
@@ -162,4 +165,3 @@ pub struct RVariable {
     pub location: Point,
     pub parent: Option<Arc<RSymbol>>,
 }
-

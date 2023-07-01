@@ -85,7 +85,10 @@ impl<'a> ProgressReporter<'a> {
         let value = lsp_types::ProgressParamsValue::WorkDone(work_done_progress);
 
         let token = lsp_types::NumberOrString::Number(token);
-        let progress_params = ProgressParams { token, value };
+        let progress_params = ProgressParams {
+            token,
+            value,
+        };
 
         let result = serde_json::to_value(progress_params)?;
         let not = lsp_server::Notification::new("$/progress".to_string(), result);

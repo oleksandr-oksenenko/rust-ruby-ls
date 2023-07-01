@@ -1,11 +1,14 @@
 use std::{path::Path, sync::Arc};
 
-use log::{info, error, warn};
+use log::{error, info, warn};
 use tree_sitter::{Node, Query, QueryCursor};
 
 use itertools::Itertools;
 
-use crate::{parsers::types::{NodeKind, NodeName, SCOPE_DELIMITER, Scope}, types::{RSymbol, RMethodParam, MethodParam, RMethod}};
+use crate::{
+    parsers::types::{NodeKind, NodeName, Scope, SCOPE_DELIMITER},
+    types::{MethodParam, RMethod, RMethodParam, RSymbol},
+};
 
 pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
     assert!(node.kind() == NodeKind::Method || node.kind() == NodeKind::SingletonMethod);
@@ -65,9 +68,7 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
         params.push(param);
     }
 
-    let scope = scope
-        .map(|s| s.join(&(&name).into()))
-        .unwrap_or(Scope::from(&name));
+    let scope = scope.map(|s| s.join(&(&name).into())).unwrap_or(Scope::from(&name));
 
     RSymbol::Method(RMethod {
         file: file.to_owned(),
@@ -96,11 +97,7 @@ pub fn get_method_variable_definition<'a>(
 
     let mut cursor = context.walk();
     if !cursor.goto_first_child() {
-        error!(
-            "Context node is empty, kind: {}, start position: {:?}",
-            context.kind(),
-            context.start_position()
-        );
+        error!("Context node is empty, kind: {}, start position: {:?}", context.kind(), context.start_position());
         return None;
     };
 
@@ -173,7 +170,6 @@ pub fn get_method_variable_definition<'a>(
     None
 }
 
-
 fn get_method_param_nodes<'a>(file: &Path, method_node: &Node<'a>) -> Vec<Node<'a>> {
     let mut params = Vec::new();
 
@@ -199,4 +195,3 @@ fn get_method_param_nodes<'a>(file: &Path, method_node: &Node<'a>) -> Vec<Node<'
 
     params
 }
-
