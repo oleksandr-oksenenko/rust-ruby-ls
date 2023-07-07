@@ -1,7 +1,8 @@
 use std::{
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
-    time::Instant, rc::Rc,
+    time::Instant,
 };
 
 use anyhow::Result;
@@ -10,8 +11,9 @@ use crossbeam_channel::Sender;
 use log::info;
 use lsp_server::{Connection, Message, RequestId, Response};
 use lsp_types::{
-    request::{DocumentSymbolRequest, WorkspaceSymbolRequest, GotoDefinition},
-    DocumentSymbolParams, Location, Position, Range, SymbolInformation, SymbolKind, Url, WorkspaceSymbolParams, GotoDefinitionParams, GotoDefinitionResponse,
+    request::{DocumentSymbolRequest, GotoDefinition, WorkspaceSymbolRequest},
+    DocumentSymbolParams, GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, SymbolInformation,
+    SymbolKind, Url, WorkspaceSymbolParams,
 };
 use serde::de::DeserializeOwned;
 use tree_sitter::Point;
@@ -28,7 +30,7 @@ pub struct Server<'a> {
     symbols: Rc<Vec<Arc<RSymbol>>>,
     ruby_env_provider: Rc<RubyEnvProvider>,
     ruby_filename_converter: Rc<RubyFilenameConverter>,
-    progress_reporter: Rc<ProgressReporter<'a>>
+    progress_reporter: Rc<ProgressReporter<'a>>,
 }
 
 trait Handler<P: DeserializeOwned> {
@@ -42,7 +44,12 @@ impl<'a> Server<'a> {
         let progress_reporter = Rc::new(ProgressReporter::new(sender));
         let ruby_env_provider = Rc::new(RubyEnvProvider::new(&root_dir));
         let ruby_filename_converter = Rc::new(RubyFilenameConverter::new(&root_dir, &ruby_env_provider)?);
-        let mut indexer = Indexer::new(&root_dir, progress_reporter.clone(), ruby_env_provider.clone(), ruby_filename_converter.clone());
+        let mut indexer = Indexer::new(
+            &root_dir,
+            progress_reporter.clone(),
+            ruby_env_provider.clone(),
+            ruby_filename_converter.clone(),
+        );
 
         let symbols = Rc::new(indexer.index()?);
         let finder = Finder::new(&root_dir, symbols.clone(), ruby_filename_converter.clone());
@@ -54,7 +61,7 @@ impl<'a> Server<'a> {
             symbols,
             ruby_filename_converter,
             ruby_env_provider,
-            progress_reporter
+            progress_reporter,
         })
     }
 
@@ -63,16 +70,21 @@ impl<'a> Server<'a> {
 
         let sender = &connection.sender;
         match request.method.as_str() {
-            WorkspaceSymbolRequest::METHOD => self
-                .handle::<WorkspaceSymbolParams>(&sender, request.extract::<WorkspaceSymbolParams>(WorkspaceSymbolRequest::METHOD)?),
+            WorkspaceSymbolRequest::METHOD => self.handle::<WorkspaceSymbolParams>(
+                sender,
+                request.extract::<WorkspaceSymbolParams>(WorkspaceSymbolRequest::METHOD)?,
+            ),
 
-            DocumentSymbolRequest::METHOD => {
-                self.handle::<DocumentSymbolRequest>(&sender, request.extract::<DocumentSymbolParams>(DocumentSymbolRequest::METHOD)?)
-            },
+            DocumentSymbolRequest::METHOD => self.handle::<DocumentSymbolRequest>(
+                sender,
+                request.extract::<DocumentSymbolParams>(DocumentSymbolRequest::METHOD)?,
+            ),
 
-            GotoDefinition::METHOD => self.handle::<GotoDefinition>(&sender, request.extract::<GotoDefinitionParams>(GotoDefinition::METHOD)?),
+            GotoDefinition::METHOD => {
+                self.handle::<GotoDefinition>(sender, request.extract::<GotoDefinitionParams>(GotoDefinition::METHOD)?)
+            }
 
-            _ => return Err(anyhow!("Method {} is not supported", request.method)),
+            _ => Err(anyhow!("Method {} is not supported", request.method)),
         }
     }
 
@@ -141,7 +153,7 @@ impl<'a> Handler<WorkspaceSymbolParams> for Server<'a> {
         let symbols: Vec<SymbolInformation> =
             self.finder.fuzzy_find_symbol(&params.query).iter().map(Self::convert_to_lsp_sym_info).collect();
 
-        Self::send_response(&sender, id, symbols)?;
+        Self::send_response(sender, id, symbols)?;
 
         let duration = start.elapsed();
 
@@ -160,9 +172,8 @@ impl<'a> Handler<DocumentSymbolParams> for Server<'a> {
         info!("[#{id}] Got document/symbol request, params = {params:?}");
 
         let path = params.text_document.uri.to_file_path().unwrap();
-        let symbols: Vec<SymbolInformation> = self.finder.find_by_path(&path).iter()
-            .map(Self::convert_to_lsp_sym_info)
-            .collect();
+        let symbols: Vec<SymbolInformation> =
+            self.finder.find_by_path(&path).iter().map(Self::convert_to_lsp_sym_info).collect();
 
         let result = serde_json::to_value(symbols).unwrap();
 
@@ -194,7 +205,8 @@ impl<'a> Handler<GotoDefinitionParams> for Server<'a> {
             column: position.character.try_into()?,
         };
 
-        let symbols: Vec<Location> = self.finder
+        let symbols: Vec<Location> = self
+            .finder
             .find_definition(file.as_path(), position)?
             .iter()
             .map(Self::convert_to_lsp_sym_info)

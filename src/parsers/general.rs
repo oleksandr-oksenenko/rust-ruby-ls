@@ -1,8 +1,8 @@
-use std::{path::Path, sync::Arc, fs};
+use std::{fs, path::Path, sync::Arc};
 
 use anyhow::Result;
 use log::info;
-use tree_sitter::{Node, Tree, Parser};
+use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_ruby::language;
 
 use crate::types::RSymbol;
@@ -61,4 +61,3 @@ pub fn read_file_tree(path: &Path) -> Result<(Tree, Vec<u8>)> {
 
     Ok((tree, source))
 }
-

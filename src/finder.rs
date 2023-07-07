@@ -1,34 +1,49 @@
-use std::{time::Instant, sync::Arc, path::{Path, PathBuf}, rc::Rc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
-use log::{info, debug};
+use log::{debug, info};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use tree_sitter::{Node, Point};
 
-use crate::{types::{RSymbol, RVariable}, symbols_matcher::SymbolsMatcher, parsers::{types::{NodeKind, NodeName, Scope}, general::read_file_tree, identifiers::get_identifier_context}, ruby_filename_converter::RubyFilenameConverter};
 use crate::parsers::methods::get_method_variable_definition;
 use crate::parsers::scopes::{get_context_scope, get_parent_scope_resolution};
+use crate::{
+    parsers::{
+        general::read_file_tree,
+        identifiers::get_identifier_context,
+        types::{NodeKind, NodeName, Scope},
+    },
+    ruby_filename_converter::RubyFilenameConverter,
+    symbols_matcher::SymbolsMatcher,
+    types::{RSymbol, RVariable},
+};
 
 pub struct Finder {
     root_dir: PathBuf,
     symbols: Rc<Vec<Arc<RSymbol>>>,
-    ruby_filename_converter: Rc<RubyFilenameConverter>
+    ruby_filename_converter: Rc<RubyFilenameConverter>,
 }
 
 impl Finder {
-    pub fn new(root_dir: &Path, symbols: Rc<Vec<Arc<RSymbol>>>, ruby_filename_converter: Rc<RubyFilenameConverter>) -> Finder {
+    pub fn new(
+        root_dir: &Path,
+        symbols: Rc<Vec<Arc<RSymbol>>>,
+        ruby_filename_converter: Rc<RubyFilenameConverter>,
+    ) -> Finder {
         Finder {
             root_dir: root_dir.to_path_buf(),
             symbols,
-            ruby_filename_converter
+            ruby_filename_converter,
         }
     }
 
     pub fn find_by_path(&self, path: &Path) -> Vec<Arc<RSymbol>> {
-        self.symbols.iter()
-            .filter(|s| s.file() == path)
-            .cloned()
-            .collect()
+        self.symbols.iter().filter(|s| s.file() == path).cloned().collect()
     }
 
     pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Arc<RSymbol>> {
@@ -192,5 +207,4 @@ impl Finder {
 
         results
     }
-
 }

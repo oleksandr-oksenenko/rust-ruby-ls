@@ -12,10 +12,7 @@ extern crate anyhow;
 use anyhow::Result;
 
 use lsp_server::{Connection, Message};
-use lsp_types::{
-    InitializeParams, OneOf,
-    ServerCapabilities,
-};
+use lsp_types::{InitializeParams, OneOf, ServerCapabilities};
 
 mod finder;
 mod indexer;
@@ -26,7 +23,6 @@ mod ruby_filename_converter;
 mod server;
 mod symbols_matcher;
 mod types;
-
 
 use crate::server::Server;
 
@@ -92,4 +88,3 @@ fn main_loop(connection: Connection, params: serde_json::Value) -> Result<()> {
 
     Ok(())
 }
-
