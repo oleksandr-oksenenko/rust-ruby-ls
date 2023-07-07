@@ -27,7 +27,7 @@ pub struct Indexer<'a> {
 
 impl<'a> Indexer<'a> {
     pub fn new(
-        root_dir: &PathBuf,
+        root_dir: &Path,
         progress_reporter: Rc<ProgressReporter<'a>>,
         ruby_env_provider: Rc<RubyEnvProvider>,
         ruby_filename_converter: Rc<RubyFilenameConverter>,

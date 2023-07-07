@@ -160,6 +160,6 @@ impl std::fmt::Display for Scope {
         } else {
             self.scopes.join(SCOPE_DELIMITER)
         };
-        write!(f, "Scope({})", str)
+        write!(f, "{str}")
     }
 }

@@ -14,7 +14,7 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
 
     let node = if node.kind() == NodeKind::RestAssignment { node.child(0).unwrap() } else { *node };
 
-    let scope = match &parent {
+    let parent_scope = match &parent {
         Some(p) => match &**p {
             RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scope),
             _ => None,
@@ -24,16 +24,11 @@ pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Ar
     };
     let text = node.utf8_text(source).unwrap().to_string();
 
-    let name = match scope {
-        Some(s) => s.to_string() + SCOPE_DELIMITER + &text,
-        None => text,
-    };
-
-    let scope = scope.map(|s| s.join(&(&name).into())).unwrap_or_default();
+    let scope = parent_scope.map(|s| s.join(&(&text).into())).unwrap_or_default();
 
     Some(RSymbol::Constant(RConstant {
         file: file.to_owned(),
-        name,
+        name: scope.to_string(),
         scope,
         location: node.start_position(),
         parent,

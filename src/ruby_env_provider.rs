@@ -1,4 +1,8 @@
-use std::{fs, path::{PathBuf, Path}, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result};
 use log::info;
@@ -62,13 +66,22 @@ impl RubyEnvProvider {
         let ruby_path = self.ruby_path().with_context(|| "Failed to find ruby path")?;
         let cmd = bundle_path.unwrap_or(ruby_path);
 
-        info!("Cmd path: {cmd:?}");
+        let mut command = Command::new(cmd);
+        let command = command.arg("exec").arg(args);
 
-        Command::new(cmd)
-            .arg(args)
-            .output()
-            .map(|o| o.stdout)
-            .with_context(|| format!("Failed to run context command: {args}"))
+        info!("Running command: {command:?}");
+
+        match command.output() {
+            Ok(o) => {
+                if o.status.success() {
+                    Ok(o.stdout)
+                } else {
+                    Err(anyhow!("Rails runner command failed with {:?} exit code", o.status.code()))
+                }
+            }
+
+            Err(e) => Err(e).with_context(|| format!("Failed to run context command: {args}")),
+        }
     }
 
     fn ruby_version(&self) -> Result<Option<String>> {

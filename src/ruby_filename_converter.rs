@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use itertools::Itertools;
+use log::info;
 
 use crate::{parsers::types::Scope, ruby_env_provider::RubyEnvProvider};
 
@@ -12,7 +13,7 @@ const AUTOLOAD_PATHS_CMD: &str = "rails runner 'puts ActiveSupport::Dependencies
 
 pub struct RubyFilenameConverter {
     root_path: PathBuf,
-    autoload_paths: Vec<String>,
+    autoload_paths: Vec<PathBuf>,
 }
 
 impl RubyFilenameConverter {
@@ -20,12 +21,19 @@ impl RubyFilenameConverter {
         let output = ruby_env_provider
             .run_context_command(AUTOLOAD_PATHS_CMD)
             .with_context(|| "Failed to run rails runner command")?;
-        let mut autoload_paths: Vec<String> =
-            String::from_utf8(output)?.split('\n').map(|s| s.to_string()).unique().collect();
+        let mut autoload_paths: Vec<PathBuf> = String::from_utf8(output)?
+            .split('\n')
+            .map(|s| s.to_string())
+            .unique()
+            .map(PathBuf::from)
+            .map(|p| p.strip_prefix(root_path).map(|p| p.to_path_buf()).unwrap_or(p))
+            .collect();
 
-        let mut other_paths = RAILS_ROOT_PATHS.iter().map(|s| s.to_string()).collect();
+        let mut other_paths = RAILS_ROOT_PATHS.iter().map(PathBuf::from).collect();
 
         autoload_paths.append(&mut other_paths);
+
+        info!("Using the following autoload paths: {:?}", autoload_paths);
 
         Ok(RubyFilenameConverter {
             root_path: root_path.to_path_buf(),
