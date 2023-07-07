@@ -16,7 +16,7 @@ pub struct RubyFilenameConverter {
 }
 
 impl RubyFilenameConverter {
-    pub fn new(root_path: PathBuf, ruby_env_provider: &RubyEnvProvider) -> Result<RubyFilenameConverter> {
+    pub fn new(root_path: &Path, ruby_env_provider: &RubyEnvProvider) -> Result<RubyFilenameConverter> {
         let output = ruby_env_provider
             .run_context_command(AUTOLOAD_PATHS_CMD)
             .with_context(|| "Failed to run rails runner command")?;
@@ -28,7 +28,7 @@ impl RubyFilenameConverter {
         autoload_paths.append(&mut other_paths);
 
         Ok(RubyFilenameConverter {
-            root_path,
+            root_path: root_path.to_path_buf(),
             autoload_paths,
         })
     }

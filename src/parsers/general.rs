@@ -1,7 +1,9 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, fs};
 
+use anyhow::Result;
 use log::info;
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree, Parser};
+use tree_sitter_ruby::language;
 
 use crate::types::RSymbol;
 
@@ -49,3 +51,14 @@ pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>
         }
     }
 }
+
+pub fn read_file_tree(path: &Path) -> Result<(Tree, Vec<u8>)> {
+    let source = fs::read(path)?;
+
+    let mut parser = Parser::new();
+    parser.set_language(language())?;
+    let tree = parser.parse(&source[..], None).unwrap();
+
+    Ok((tree, source))
+}
+

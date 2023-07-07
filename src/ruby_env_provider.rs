@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::{PathBuf, Path}, process::Command};
 
 use anyhow::{Context, Result};
 use log::info;
@@ -8,9 +8,9 @@ pub struct RubyEnvProvider {
 }
 
 impl RubyEnvProvider {
-    pub fn new(dir: PathBuf) -> RubyEnvProvider {
+    pub fn new(dir: &Path) -> RubyEnvProvider {
         RubyEnvProvider {
-            dir,
+            dir: dir.to_path_buf(),
         }
     }
 
