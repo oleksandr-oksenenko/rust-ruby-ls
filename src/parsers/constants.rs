@@ -3,9 +3,7 @@ use std::{path::Path, sync::Arc};
 use log::error;
 use tree_sitter::Node;
 
-use crate::types::{RConstant, RSymbol};
-
-use super::types::{NodeKind, SCOPE_DELIMITER};
+use crate::types::{RConstant, RSymbol, NodeKind};
 
 pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Arc<RSymbol>>) -> Option<RSymbol> {
     if node.kind() != NodeKind::Constant && node.kind() != NodeKind::RestAssignment {

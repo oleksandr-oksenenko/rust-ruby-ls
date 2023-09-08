@@ -485,8 +485,6 @@ end
 
     #[cfg(test)]
     mod get_full_and_context_scope_tests {
-        use crate::types::GLOBAL_SCOPE_VALUE;
-
         use super::*;
 
         #[test]

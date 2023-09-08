@@ -5,34 +5,34 @@ use std::{
     time::Instant,
 };
 
-use log::{debug, info};
+use log::{debug, error, info};
+
+use itertools::Itertools;
 
 use anyhow::{Context, Result};
-use tree_sitter::{Node, Point};
+use tree_sitter::{Node, Point, Range};
 
-use crate::parsers::methods::get_method_variable_definition;
-use crate::parsers::scopes::{get_context_scope, get_parent_scope_resolution};
 use crate::{
-    parsers::{
+    parsers_v2::{
         general::read_file_tree,
-        identifiers::get_identifier_context,
-        types::{NodeKind, NodeName, Scope},
+        identifiers::find_first_assingment_with_lhs_text,
+        scopes::{get_context_scope, get_parent_scope_resolution},
     },
     ruby_filename_converter::RubyFilenameConverter,
     symbols_matcher::SymbolsMatcher,
-    types::{RSymbol, RVariable},
+    types::{NodeKind, RSymbolKind, RSymbolV2, Scope, NodeName},
 };
 
 pub struct Finder {
     root_dir: PathBuf,
-    symbols: Rc<Vec<Arc<RSymbol>>>,
+    symbols: Rc<Vec<Arc<RSymbolV2>>>,
     ruby_filename_converter: Rc<RubyFilenameConverter>,
 }
 
 impl Finder {
     pub fn new(
         root_dir: &Path,
-        symbols: Rc<Vec<Arc<RSymbol>>>,
+        symbols: Rc<Vec<Arc<RSymbolV2>>>,
         ruby_filename_converter: Rc<RubyFilenameConverter>,
     ) -> Finder {
         Finder {
@@ -42,11 +42,11 @@ impl Finder {
         }
     }
 
-    pub fn find_by_path(&self, path: &Path) -> Vec<Arc<RSymbol>> {
-        self.symbols.iter().filter(|s| s.file() == path).cloned().collect()
+    pub fn find_by_path(&self, path: &Path) -> Vec<Arc<RSymbolV2>> {
+        self.symbols.iter().filter(|s| s.file == path).cloned().collect()
     }
 
-    pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Arc<RSymbol>> {
+    pub fn fuzzy_find_symbol(&self, query: &str) -> Vec<Arc<RSymbolV2>> {
         let start = Instant::now();
         let result = if query.is_empty() {
             // optimization to not overload telescope on request without a query
@@ -60,7 +60,7 @@ impl Finder {
         result
     }
 
-    pub fn find_definition(&self, file: &Path, position: Point) -> Result<Vec<Arc<RSymbol>>> {
+    pub fn find_definition(&self, file: &Path, position: Point) -> Result<Vec<Arc<RSymbolV2>>> {
         let (tree, source) = read_file_tree(file)?;
 
         let node = tree
@@ -68,102 +68,168 @@ impl Finder {
             .descendant_for_point_range(position, position)
             .ok_or(anyhow!("Failed to find node of definition"))?;
 
-        let node_kind = node.kind().try_into().with_context(|| format!("Unknown node kind: {}", node.kind()))?;
+        let node_kind: NodeKind =
+            node.kind().try_into().with_context(|| format!("Unknown node kind: {}", node.kind()))?;
 
         match node_kind {
             NodeKind::Constant => Ok(self.find_constant(&node, file, &source)),
-            NodeKind::Identifier => self.find_identifier(&node, file, &source),
-            NodeKind::GlobalVariable => self.find_global_variable(&node, &source),
-            _ => Err(anyhow!("Find definition of {} node kind is not supported", node.kind())),
+            NodeKind::GlobalVariable => Ok(self.find_global_variable(&node, &source)),
+            NodeKind::Identifier => Ok(self.find_identifier(&node, file, &source)),
+            _ => Err(anyhow!("Failed to determine symbol type, node kind: {node_kind:?}")),
         }
     }
 
-    fn find_identifier(&self, node: &Node, file: &Path, source: &[u8]) -> Result<Vec<Arc<RSymbol>>> {
-        info!("Trying to find an identifier in {:?} at {:?}", file, node.start_position());
-        let identifier = node.utf8_text(source).unwrap();
+    fn find_identifier(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbolV2>> {
+        info!("Trying to find an identifier");
 
-        let parent = node.parent().with_context(|| {
-            format!("Failed to find parent for identifier in {:?} at {:?}", file, node.start_position())
-        })?;
+        let identifier_text = node.utf8_text(source).unwrap().to_string();
 
-        let context_node = get_identifier_context(node).ok_or(anyhow!(
-            "Failed to determine context of node in {:?} at {:?}",
-            file,
-            node.start_position()
-        ))?;
+        // identifier could be:
+        // 1. local variable
+        // 2. method parameter
+        // 3. instance variable
+        // 4. class variable
+        // 5. instance method
+        // 6. class method
 
-        match context_node.kind().try_into()? {
-            NodeKind::Call => {
-                let receiver = parent.child_by_field_name(NodeName::Receiver);
-                self.find_method_definition(identifier, file, receiver)
-            }
-
-            NodeKind::Method | NodeKind::SingletonMethod => {
-                let variable_def = get_method_variable_definition(node, &context_node, file, source).ok_or(anyhow!(
-                    "Failed to find variable definition in {:?} at {:?}",
-                    file,
-                    node.start_position()
-                ))?;
-                let symbol = Arc::new(RSymbol::Variable(RVariable {
-                    file: file.to_path_buf(),
-                    name: variable_def.utf8_text(source).unwrap().to_string(),
-                    scope: Scope::new(vec![]),
-                    location: variable_def.start_position(),
-                    parent: None,
-                }));
-                Ok(vec![symbol])
-            }
-
-            _ => Ok(vec![]),
-        }
-    }
-
-    fn find_method_definition(
-        &self,
-        method_name: &str,
-        file: &Path,
-        receiver: Option<Node>,
-    ) -> Result<Vec<Arc<RSymbol>>> {
-        let receiver_kind = receiver.map(|n| n.kind());
-        info!("Trying to find method: {method_name}, receiver kind = {receiver_kind:?}");
-
-        let receiver_definitions = receiver.map(|r| self.find_definition(file, r.start_position())).transpose()?;
-
-        Ok(self
+        info!("Identifier start = {}, end = {}", node.start_position(), node.end_position());
+        let scope_symbol = self
             .symbols
             .iter()
-            // TODO: depends on the type of receiver, change after adding more definition types
-            .filter(|s| matches!(***s, RSymbol::SingletonMethod(_)))
-            .filter(|s| {
-                let defs = if let Some(rd) = &receiver_definitions { rd } else { return true };
-                let parent = if let Some(p) = s.parent() { p } else { return true };
+            .filter(|s| s.file == file)
+            // .inspect(|s| info!("Symbol start = {}, end = {}", s.start, s.end))
+            .filter(|s| s.start < node.start_position() && s.end > node.end_position())
+            .sorted_by_key(|s| [s.end.row - s.start.row, s.end.column - s.start.column])
+            .next();
 
-                defs.contains(parent)
-            })
-            .filter(|s| s.full_scope().last().map(|l| l == method_name).unwrap_or(false))
-            .cloned()
-            .collect())
+        let scope_symbol = if let Some(sym) = scope_symbol {
+            sym
+        } else {
+            error!("Failed to find scope symbol");
+            return vec![];
+        };
+
+        info!("Scope symbol for identifier: {scope_symbol:?}");
+
+        match &scope_symbol.kind {
+            RSymbolKind::Class {
+                ..
+            } => todo!(),
+            RSymbolKind::Module {
+                ..
+            } => todo!(),
+
+            RSymbolKind::SingletonMethod { parameters } | RSymbolKind::InstanceMethod { parameters } => {
+                // priority of the search
+                // 1. local variable (search for assignment up from the node)
+                // 2. method parameter
+                // 3. instance variable/method
+                // 4. class variable/method
+
+                // 1.
+                info!("Searching for local variable");
+                let assignment_left_node = find_first_assingment_with_lhs_text(node, &scope_symbol.start, source);
+                if let Some(def) = assignment_left_node {
+                    let result = RSymbolV2 {
+                        kind: RSymbolKind::Variable,
+                        name: identifier_text,
+                        scope: scope_symbol.scope.clone(),
+                        file: file.to_path_buf(),
+                        start: def.start_position(),
+                        end: def.end_position(),
+                        parent: Some(scope_symbol.clone()),
+                    };
+                    return vec![Arc::new(result)];
+                }
+
+                // 2.
+                info!("Searching for parameter");
+                if let Some(param) = parameters.iter().find(|p| p.name == identifier_text) {
+                    let result = RSymbolV2 {
+                        kind: RSymbolKind::Variable,
+                        name: identifier_text,
+                        scope: scope_symbol.scope.clone(),
+                        file: file.to_path_buf(),
+                        start: param.start,
+                        end: param.end,
+                        parent: Some(scope_symbol.clone()),
+                    };
+                    return vec![Arc::new(result)];
+                }
+
+                // 3.
+                let parent = node.parent();
+                let is_call = parent.as_ref().map(|p| p.kind() == NodeKind::Call).unwrap_or(false);
+                if is_call {
+                    let call = parent.unwrap();
+                    let method = call.child_by_field_name(NodeName::Method).unwrap();
+                    let receiver = call.child_by_field_name(NodeName::Receiver).unwrap();
+
+                    match receiver.kind().try_into() {
+                        Err(_) => {
+                            error!("Unknown receiver kind: {}", receiver.kind());
+                            return vec![]
+                        },
+                        Ok(kind) => match kind {
+                            NodeKind::Zelf => {
+
+                            },
+
+                            _ => {
+                                error!("Unsupported receiver node kind: {kind}");
+                                return vec![]
+                            }
+                        }
+                    }
+
+                }
+                // TODO: depends on the receiver
+                info!("Searching for instance method or variable");
+                let variables: Vec<_> = self.symbols.iter()
+                    .filter(|s| matches!(s.kind, RSymbolKind::InstanceVariable | RSymbolKind::InstanceMethod { .. }))
+                    .filter(|s| s.scope == scope_symbol.scope)
+                    .inspect(|s| info!("Method or variable with the same scope as in scope_symbol: {}", s.name))
+                    .filter(|s| s.name == identifier_text)
+                    .cloned()
+                    .collect();
+                if !variables.is_empty() {
+                    return variables
+                }
+
+                // 4.
+                // TODO: depends on the receiver
+                info!("Searching for class method or variable");
+                let variables: Vec<_> = self.symbols.iter()
+                    .filter(|s| matches!(s.kind, RSymbolKind::ClassVariable | RSymbolKind::SingletonMethod { .. }))
+                    .filter(|s| s.name == identifier_text)
+                    .cloned()
+                    .collect();
+                if !variables.is_empty() {
+                    return variables;
+                }
+            }
+            _ => {
+                error!("Unexpected scope symbol: {scope_symbol:?}");
+                return vec![];
+            }
+        };
+
+        vec![]
     }
 
-    fn find_global_variable(&self, node: &Node, source: &[u8]) -> Result<Vec<Arc<RSymbol>>> {
+    fn find_global_variable(&self, node: &Node, source: &[u8]) -> Vec<Arc<RSymbolV2>> {
         info!("Trying to find a global variable");
-
-        let node_kind: NodeKind = node.kind().try_into()?;
-        if node_kind != NodeKind::GlobalVariable {
-            bail!("Node kind is not global variable")
-        }
-
         let name = node.utf8_text(source).unwrap();
 
-        Ok(self
-            .symbols
+        self.symbols
             .iter()
-            .filter(|s| matches!(***s, RSymbol::GlobalVariable(_) if s.name() == name))
+            .filter(|s| s.kind == RSymbolKind::GlobalVariable)
+            .filter(|s| s.name == name)
             .cloned()
-            .collect())
+            .collect()
     }
 
-    fn find_constant(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbol>> {
+    fn find_constant(&self, node: &Node, file: &Path, source: &[u8]) -> Vec<Arc<RSymbolV2>> {
         info!("Trying to find a constant");
         // traverse down till we hit the whole symbol name
         let constant_scope = get_parent_scope_resolution(node, source);
@@ -174,22 +240,19 @@ impl Finder {
         file_scope.remove_last();
         let file_scope = file_scope.join(&constant_scope);
 
-        let symbols = self
-            .symbols
-            .iter()
-            .filter(|s| matches!(***s, RSymbol::Class(_) | RSymbol::Module(_) | RSymbol::Constant(_)));
+        let symbols = self.symbols.iter().filter(|s| s.kind.is_classlike() || s.kind == RSymbolKind::Constant);
 
         let results = if constant_scope.is_global() {
             info!("Global scope, searching for {constant_scope}");
-            symbols.filter(|s| s.full_scope() == &constant_scope).cloned().collect()
+            symbols.filter(|s| s.scope == constant_scope).cloned().collect()
         } else {
-            info!("Searching for {context_scope} or {file_scope} or {context_scope} in the same file");
+            info!("Searching for {context_scope} or {file_scope} or {constant_scope} in the same file");
             // search in contexts first
-            let found_symbols: Vec<Arc<RSymbol>> = symbols
+            let found_symbols: Vec<Arc<RSymbolV2>> = symbols
                 .clone()
                 .filter(|s| {
-                    let name = s.full_scope();
-                    name == &context_scope || name == &file_scope || (name == &constant_scope && s.file() == file)
+                    let name = &s.scope.join(&(&s.name).into());
+                    name == &context_scope || name == &file_scope || (name == &constant_scope && s.file == file)
                 })
                 .cloned()
                 .collect();
@@ -197,7 +260,7 @@ impl Finder {
             // then global
             if found_symbols.is_empty() {
                 info!("Haven't found anything, searching for global {constant_scope}");
-                symbols.clone().filter(|s| s.full_scope() == &constant_scope).cloned().collect()
+                symbols.clone().filter(|s| s.scope == constant_scope).cloned().collect()
             } else {
                 found_symbols
             }

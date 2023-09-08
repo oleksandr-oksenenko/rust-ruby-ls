@@ -3,13 +3,16 @@ use std::{path::Path, sync::Arc};
 use tree_sitter::Node;
 
 use crate::{
-    parsers::{
-        constants::parse_constant,
-    },
-    types::{RSymbol, RVariable, NodeName, NodeKind, Scope},
+    parsers_v2::constants::parse_constant,
+    types::{NodeKind, NodeName, RSymbolKind, RSymbolV2, Scope},
 };
 
-pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> Option<Vec<RSymbol>> {
+pub fn parse_assignment(
+    file: &Path,
+    source: &[u8],
+    node: Node,
+    parent: Option<Arc<RSymbolV2>>,
+) -> Option<Vec<RSymbolV2>> {
     assert_eq!(node.kind(), NodeKind::Assignment);
 
     let lhs = node.child_by_field_name(NodeName::Left).unwrap();
@@ -35,13 +38,16 @@ pub fn parse_assignment(file: &Path, source: &[u8], node: Node, parent: Option<A
         NodeKind::GlobalVariable => {
             let name = lhs.utf8_text(source).unwrap().to_string();
             let scope: Scope = (&name).into();
-            Some(vec![RSymbol::GlobalVariable(RVariable {
-                file: file.to_path_buf(),
+
+            Some(vec![RSymbolV2 {
+                kind: RSymbolKind::GlobalVariable,
                 name,
                 scope,
-                location: node.start_position(),
-                parent: None,
-            })])
+                file: file.to_path_buf(),
+                start: node.start_position(),
+                end: node.end_position(),
+                parent,
+            }])
         }
 
         NodeKind::ScopeResolution => {

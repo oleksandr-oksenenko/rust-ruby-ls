@@ -1,62 +1,67 @@
-use std::{path::Path, sync::Arc};
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 use log::{error, info, warn};
 use tree_sitter::{Node, Query, QueryCursor};
 
 use itertools::Itertools;
 
-use crate::types::{MethodParam, RMethod, RMethodParam, RSymbol, NodeKind, NodeName, SCOPE_DELIMITER, Scope};
+use crate::types::{RSymbolV2, NodeKind, RSymbolKind, NodeName, RMethodParam, MethodParam, Scope, RMethodParamV2, RMethodParamKind};
 
-pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
+pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
     assert!(node.kind() == NodeKind::Method || node.kind() == NodeKind::SingletonMethod);
 
-    let scope = match &parent {
-        Some(p) => match &**p {
-            RSymbol::Class(c) | RSymbol::Module(c) => Some(&c.scope),
-            _ => None,
-        },
-
-        None => None,
+    let parent_scope = match &parent {
+        None => Scope::default(),
+        Some(parent_symbol) => {
+            if parent_symbol.kind.is_classlike() {
+                parent_symbol.scope.join(&(&parent_symbol.name).into())
+            } else {
+                Scope::default()
+            }
+        }
     };
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
     let name = name_node.utf8_text(source).unwrap().to_string();
-    let name = match scope {
-        Some(s) => s.to_string() + SCOPE_DELIMITER + &name,
-        None => name,
-    };
 
-    let mut params: Vec<RMethodParam> = Vec::new();
+    let mut params: Vec<RMethodParamV2> = Vec::new();
 
     for param in get_method_param_nodes(file, &node) {
         let param = match param.kind().try_into().unwrap() {
             NodeKind::Identifier => {
                 let name = param.utf8_text(source).unwrap().to_string();
 
-                RMethodParam::Regular(MethodParam {
+                RMethodParamV2 {
+                    kind: RMethodParamKind::Regular,
                     file: file.to_path_buf(),
                     name,
-                    location: param.start_position(),
-                })
+                    start: param.start_position(),
+                    end: param.end_position()
+                }
             }
 
             NodeKind::OptionalParameter => {
                 let name_node = param.child_by_field_name(NodeName::Name).unwrap();
                 let name = name_node.utf8_text(source).unwrap().to_string();
-                RMethodParam::Optional(MethodParam {
+
+                RMethodParamV2 {
+                    kind: RMethodParamKind::Optional,
                     file: file.to_path_buf(),
                     name,
-                    location: param.start_position(),
-                })
+                    start: name_node.start_position(),
+                    end: name_node.end_position()
+                }
             }
             NodeKind::KeywordParameter => {
                 let name_node = param.child_by_field_name(NodeName::Name).unwrap();
                 let name = name_node.utf8_text(source).unwrap().to_string();
-                RMethodParam::Keyword(MethodParam {
+                RMethodParamV2 {
+                    kind: RMethodParamKind::Keyword,
                     file: file.to_path_buf(),
                     name,
-                    location: param.start_position(),
-                })
+                    start: name_node.start_position(),
+                    end: name_node.end_position()
+                }
             }
 
             _ => unreachable!(),
@@ -65,23 +70,27 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
         params.push(param);
     }
 
-    let scope = scope.map(|s| s.join(&(&name).into())).unwrap_or(Scope::from(&name));
-
-    RSymbol::Method(RMethod {
-        file: file.to_owned(),
+    RSymbolV2 {
+        kind: RSymbolKind::InstanceMethod { parameters: params },
         name,
-        scope,
-        location: name_node.start_position(),
-        parameters: params,
+        scope: parent_scope,
+        file: file.to_path_buf(),
+        start: name_node.start_position(),
+        end: node.end_position(),
         parent,
-    })
+    }
 }
 
-pub fn parse_singleton_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbol>>) -> RSymbol {
-    match parse_method(file, source, node, parent) {
-        RSymbol::Method(method) => RSymbol::SingletonMethod(method),
-        _ => unreachable!(),
-    }
+pub fn parse_singleton_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
+    let mut instance_method_symbol = parse_method(file, source, node, parent);
+
+    let parameters = match instance_method_symbol.kind {
+        RSymbolKind::InstanceMethod { parameters } => parameters,
+        _ => unreachable!()
+    };
+
+    instance_method_symbol.kind = RSymbolKind::SingletonMethod { parameters };
+    instance_method_symbol
 }
 
 pub fn get_method_variable_definition<'a>(

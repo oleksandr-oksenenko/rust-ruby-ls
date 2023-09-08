@@ -5,7 +5,7 @@ use std::sync::Arc;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::types::RSymbol;
+use crate::types::RSymbolV2;
 
 pub struct SymbolsMatcher<'a> {
     matcher: SkimMatcherV2,
@@ -20,20 +20,20 @@ impl<'a> SymbolsMatcher<'a> {
         }
     }
 
-    pub fn match_rsymbols(&self, query: &str, symbols: &[Arc<RSymbol>]) -> Vec<Arc<RSymbol>> {
-        let mut scores: Vec<(Arc<RSymbol>, [i32; 5])> = symbols
+    pub fn match_rsymbols(&self, query: &str, symbols: &[Arc<RSymbolV2>]) -> Vec<Arc<RSymbolV2>> {
+        let mut scores: Vec<(Arc<RSymbolV2>, [i32; 5])> = symbols
             .iter()
             .filter_map(|s| {
-                let name = s.name();
+                let name = s.scope.join(&(&s.name).into()).to_string();
 
-                match self.matcher.fuzzy_indices(name, query) {
+                match self.matcher.fuzzy_indices(&name, query) {
                     None => None,
                     Some((score, indices)) => {
                         let start = *indices.first().unwrap_or(&0);
                         let end = *indices.last().unwrap_or(&0);
                         let len = name.len();
 
-                        let s_path = s.file();
+                        let s_path = &s.file;
                         let in_root = if s_path.starts_with(self.root_path) { 1 } else { -1 };
 
                         let rank = [score as i32, in_root, -(start as i32), -(end as i32), -(len as i32)];

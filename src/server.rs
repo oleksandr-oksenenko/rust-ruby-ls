@@ -8,7 +8,7 @@ use std::{
 use anyhow::Result;
 
 use crossbeam_channel::Sender;
-use log::info;
+use log::{error, info};
 use lsp_server::{Connection, Message, RequestId, Response};
 use lsp_types::{
     request::{DocumentSymbolRequest, GotoDefinition, WorkspaceSymbolRequest},
@@ -19,15 +19,19 @@ use serde::de::DeserializeOwned;
 use tree_sitter::Point;
 
 use crate::{
-    finder::Finder, indexer::Indexer, progress_reporter::ProgressReporter, ruby_env_provider::RubyEnvProvider,
-    ruby_filename_converter::RubyFilenameConverter, types::RSymbol,
+    finder::Finder,
+    indexer::Indexer,
+    progress_reporter::ProgressReporter,
+    ruby_env_provider::RubyEnvProvider,
+    ruby_filename_converter::RubyFilenameConverter,
+    types::{RSymbolKind, RSymbolV2},
 };
 
 pub struct Server<'a> {
     root_dir: PathBuf,
     indexer: Indexer<'a>,
     pub finder: Finder,
-    symbols: Rc<Vec<Arc<RSymbol>>>,
+    symbols: Rc<Vec<Arc<RSymbolV2>>>,
     ruby_env_provider: Rc<RubyEnvProvider>,
     ruby_filename_converter: Rc<RubyFilenameConverter>,
     progress_reporter: Rc<ProgressReporter<'a>>,
@@ -100,17 +104,17 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
-    fn convert_to_lsp_sym_info(rsymbol: impl AsRef<RSymbol>) -> SymbolInformation {
+    fn convert_to_lsp_sym_info(rsymbol: impl AsRef<RSymbolV2>) -> SymbolInformation {
         let rsymbol = rsymbol.as_ref();
-        let path = rsymbol.file();
+        let path = &rsymbol.file;
         let file_path_str = path.to_str().unwrap();
         let url = Url::parse(&format!("file:///{}", file_path_str)).unwrap();
 
-        let location = rsymbol.location();
+        let location = rsymbol.start;
         let line: u32 = location.row.try_into().unwrap();
         let character: u32 = location.column.try_into().unwrap();
 
-        let name = rsymbol.name();
+        let name = &rsymbol.name;
         let name_len: u32 = name.len().try_into().unwrap();
 
         let range = Range {
@@ -118,12 +122,15 @@ impl<'a> Server<'a> {
             end: Position::new(line, character + name_len),
         };
 
-        let kind = match rsymbol {
-            RSymbol::Class(_) => SymbolKind::CLASS,
-            RSymbol::Module(_) => SymbolKind::MODULE,
-            RSymbol::Method(_) => SymbolKind::METHOD,
-            RSymbol::SingletonMethod(_) => SymbolKind::METHOD,
-            RSymbol::Constant(_) => SymbolKind::CONSTANT,
+        let kind = match rsymbol.kind {
+            RSymbolKind::Class { .. } => SymbolKind::CLASS,
+            RSymbolKind::Module { .. } => SymbolKind::MODULE,
+            RSymbolKind::InstanceMethod { .. } => SymbolKind::METHOD,
+            RSymbolKind::SingletonMethod { .. } => SymbolKind::METHOD,
+            RSymbolKind::Constant => SymbolKind::CONSTANT,
+            RSymbolKind::GlobalVariable => SymbolKind::CONSTANT,
+            RSymbolKind::InstanceVariable => SymbolKind::FIELD,
+            RSymbolKind::ClassVariable => SymbolKind::FIELD,
             _ => SymbolKind::NULL,
         };
 
@@ -205,13 +212,16 @@ impl<'a> Handler<GotoDefinitionParams> for Server<'a> {
             column: position.character.try_into()?,
         };
 
-        let symbols: Vec<Location> = self
-            .finder
-            .find_definition(file.as_path(), position)?
-            .iter()
-            .map(Self::convert_to_lsp_sym_info)
-            .map(|s| s.location)
-            .collect();
+        let definitions = match self.finder.find_definition(file.as_path(), position) {
+            Ok(defs) => defs,
+            Err(e) => {
+                error!("Failed to find definitions: {e:?}");
+                vec![]
+            }
+        };
+
+        let symbols: Vec<Location> =
+            definitions.iter().map(Self::convert_to_lsp_sym_info).map(|s| s.location).collect();
 
         info!("textDocument/definition found {} symbols", symbols.len());
 

@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::parsers::types::NodeKind;
+use crate::types::NodeKind;
 
 pub fn get_identifier_context<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     let node_kind = node.kind().try_into();

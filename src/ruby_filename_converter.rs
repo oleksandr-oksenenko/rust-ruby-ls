@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
 use log::info;
 
-use crate::{parsers::types::Scope, ruby_env_provider::RubyEnvProvider};
+use crate::{ruby_env_provider::RubyEnvProvider, types::Scope};
 
 const RAILS_ROOT_PATHS: &[&str] = &["db", "spec"];
 

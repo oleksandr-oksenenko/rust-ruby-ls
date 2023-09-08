@@ -11,12 +11,12 @@ use log::info;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use crate::parsers::general::{parse, read_file_tree};
+use crate::parsers_v2::general::{read_file_tree, parse};
 use crate::progress_reporter::ProgressReporter;
 use crate::ruby_env_provider::RubyEnvProvider;
 use crate::ruby_filename_converter::RubyFilenameConverter;
 
-use crate::types::RSymbol;
+use crate::types::RSymbolV2;
 
 pub struct Indexer<'a> {
     root_dir: PathBuf,
@@ -42,27 +42,27 @@ impl<'a> Indexer<'a> {
         }
     }
 
-    pub fn index(&mut self) -> Result<Vec<Arc<RSymbol>>> {
+    pub fn index(&mut self) -> Result<Vec<Arc<RSymbolV2>>> {
         let start = Instant::now();
         let stubs_dir = self.ruby_env_provider.stubs_dir()?;
         let gems_dir = self.ruby_env_provider.gems_dir()?;
-
+        
         let symbols = [stubs_dir.as_ref(), gems_dir.as_ref(), Some(&self.root_dir)]
             .into_iter()
             .flatten()
             .flat_map(|d| self.index_dir(d))
             .flatten()
-            .collect::<Vec<Arc<RSymbol>>>();
+            .collect::<Vec<Arc<RSymbolV2>>>();
 
         info!("Found {} symbols, took {:?}", symbols.len(), start.elapsed());
 
         Ok(symbols)
     }
 
-    fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbol>>> {
+    fn index_dir(&self, dir: &Path) -> Result<Vec<Arc<RSymbolV2>>> {
         let progress_token = self.progress_reporter.send_progress_begin(format!("Indexing {dir:?}"), "", 0)?;
 
-        let classes: Vec<Arc<RSymbol>> = WalkDir::new(dir)
+        let classes: Vec<Arc<RSymbolV2>> = WalkDir::new(dir)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
@@ -76,9 +76,9 @@ impl<'a> Indexer<'a> {
         Ok(classes)
     }
 
-    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbol>>> {
+    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbolV2>>> {
         let (tree, source) = read_file_tree(&path)?;
-        let mut result: Vec<Arc<RSymbol>> = Vec::new();
+        let mut result: Vec<Arc<RSymbolV2>> = Vec::new();
         let mut cursor = tree.walk();
         loop {
             let node = cursor.node();
