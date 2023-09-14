@@ -1,4 +1,4 @@
-use log::warn;
+use log::{warn, info};
 use tree_sitter::Node;
 
 use crate::types::{Scope, NodeKind, NodeName, GLOBAL_SCOPE_VALUE};
@@ -195,7 +195,9 @@ pub fn get_full_and_context_scope(node: &Node, source: &[u8]) -> Scope {
         return full_scope;
     }
 
-    get_context_scope(node, source)
+    let context_scopes = get_context_scope(node, source);
+
+    context_scopes.join(&full_scope)
 }
 
 #[cfg(test)]

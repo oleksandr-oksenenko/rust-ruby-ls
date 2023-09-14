@@ -1,15 +1,14 @@
 use std::{path::Path, sync::Arc};
 
-use log::{error, info};
 use tree_sitter::Node;
 
 use crate::types::{RSymbolV2, NodeName, RSymbolKind, Scope};
 
-pub fn parse_call(node: &Node, file: &Path, source: &[u8], parent: Option<Arc<RSymbolV2>>) -> Option<Vec<Arc<RSymbolV2>>> {
+pub fn parse_call<'a>(node: &Node, file: &Path, source: &[u8], parent: Option<Arc<RSymbolV2>>) -> Option<Vec<Arc<RSymbolV2>>> {
     let method_name = node.child_by_field_name(NodeName::Method).unwrap().utf8_text(source).unwrap();
     let args = match node.child_by_field_name(NodeName::Arguments) {
         None => {
-            info!("No args provided for {method_name}");
+            // info!("No args provided for {method_name}");
             return None
         },
         Some(a) => a
@@ -40,7 +39,7 @@ pub fn parse_call(node: &Node, file: &Path, source: &[u8], parent: Option<Arc<RS
         "require" | "require_relative" | "include" | "extend" => None,
 
         _ => {
-            error!("Unknown method call in class context: {method_name}");
+            // error!("Unknown method call in class context: {method_name}");
             None
         }
     }

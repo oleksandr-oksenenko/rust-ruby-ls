@@ -76,7 +76,7 @@ impl<'a> Indexer<'a> {
         Ok(classes)
     }
 
-    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbolV2>>> {
+    fn index_file_cursor(path: PathBuf) -> Result<Vec<Arc<RSymbolV2<'a>>>> {
         let (tree, source) = read_file_tree(&path)?;
         let mut result: Vec<Arc<RSymbolV2>> = Vec::new();
         let mut cursor = tree.walk();
@@ -97,5 +97,9 @@ impl<'a> Indexer<'a> {
         }
 
         Ok(result)
+    }
+
+    pub fn index_file(&self, path: &Path) -> Result<Vec<Arc<RSymbolV2>>> {
+        return Self::index_file_cursor(path.to_path_buf());
     }
 }

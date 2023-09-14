@@ -5,7 +5,7 @@ use tree_sitter::Node;
 
 use crate::types::{NodeKind, RSymbolKind, RSymbolV2, Scope};
 
-pub fn parse_constant(file: &Path, source: &[u8], node: &Node, parent: Option<Arc<RSymbolV2>>) -> Option<RSymbolV2> {
+pub fn parse_constant<'a>(file: &Path, source: &[u8], node: &Node, parent: Option<Arc<RSymbolV2>>) -> Option<RSymbolV2> {
     if node.kind() != NodeKind::Constant && node.kind() != NodeKind::RestAssignment {
         error!("{} instead of constant in {file:?} at {:?}", node.kind(), node.range());
         return None;

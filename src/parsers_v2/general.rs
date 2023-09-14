@@ -13,7 +13,7 @@ use super::{
     methods::{parse_method, parse_singleton_method}, calls::parse_call,
 };
 
-pub fn parse(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> Vec<Arc<RSymbolV2>> {
+pub fn parse<'a>(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> Vec<Arc<RSymbolV2>> {
     let node_kind = match node.kind().try_into() {
         Ok(k) => k,
         Err(_) => return vec![],

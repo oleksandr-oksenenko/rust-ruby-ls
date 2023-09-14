@@ -7,7 +7,7 @@ use crate::{
     types::{NodeKind, NodeName, RSymbolKind, RSymbolV2, Scope},
 };
 
-pub fn parse_assignment(
+pub fn parse_assignment<'a>(
     file: &Path,
     source: &[u8],
     node: Node,

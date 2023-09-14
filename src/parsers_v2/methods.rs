@@ -1,13 +1,18 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use log::{error, info, warn};
 use tree_sitter::{Node, Query, QueryCursor};
 
 use itertools::Itertools;
 
-use crate::types::{RSymbolV2, NodeKind, RSymbolKind, NodeName, RMethodParam, MethodParam, Scope, RMethodParamV2, RMethodParamKind};
+use crate::types::{
+    MethodParam, NodeKind, NodeName, RMethodParam, RMethodParamKind, RMethodParamV2, RSymbolKind, RSymbolV2, Scope,
+};
 
-pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
+pub fn parse_method<'a>(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
     assert!(node.kind() == NodeKind::Method || node.kind() == NodeKind::SingletonMethod);
 
     let parent_scope = match &parent {
@@ -23,6 +28,7 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
     let name = name_node.utf8_text(source).unwrap().to_string();
+    let name = if name == "initialize" { "new".to_string() } else { name };
 
     let mut params: Vec<RMethodParamV2> = Vec::new();
 
@@ -36,7 +42,7 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
                     file: file.to_path_buf(),
                     name,
                     start: param.start_position(),
-                    end: param.end_position()
+                    end: param.end_position(),
                 }
             }
 
@@ -49,7 +55,7 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
                     file: file.to_path_buf(),
                     name,
                     start: name_node.start_position(),
-                    end: name_node.end_position()
+                    end: name_node.end_position(),
                 }
             }
             NodeKind::KeywordParameter => {
@@ -60,7 +66,7 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
                     file: file.to_path_buf(),
                     name,
                     start: name_node.start_position(),
-                    end: name_node.end_position()
+                    end: name_node.end_position(),
                 }
             }
 
@@ -71,7 +77,9 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
     }
 
     RSymbolV2 {
-        kind: RSymbolKind::InstanceMethod { parameters: params },
+        kind: RSymbolKind::InstanceMethod {
+            parameters: params,
+        },
         name,
         scope: parent_scope,
         file: file.to_path_buf(),
@@ -81,15 +89,19 @@ pub fn parse_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<R
     }
 }
 
-pub fn parse_singleton_method(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
+pub fn parse_singleton_method<'a>(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> RSymbolV2 {
     let mut instance_method_symbol = parse_method(file, source, node, parent);
 
     let parameters = match instance_method_symbol.kind {
-        RSymbolKind::InstanceMethod { parameters } => parameters,
-        _ => unreachable!()
+        RSymbolKind::InstanceMethod {
+            parameters,
+        } => parameters,
+        _ => unreachable!(),
     };
 
-    instance_method_symbol.kind = RSymbolKind::SingletonMethod { parameters };
+    instance_method_symbol.kind = RSymbolKind::SingletonMethod {
+        parameters,
+    };
     instance_method_symbol
 }
 

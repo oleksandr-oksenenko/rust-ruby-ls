@@ -16,7 +16,6 @@ use lsp_types::{InitializeParams, OneOf, ServerCapabilities};
 
 mod finder;
 mod indexer;
-mod parsers;
 mod parsers_v2;
 mod progress_reporter;
 mod ruby_env_provider;

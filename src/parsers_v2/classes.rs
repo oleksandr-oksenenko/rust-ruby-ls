@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use log::debug;
+use log::{debug, info};
 use tree_sitter::Node;
 
 use crate::{
@@ -10,14 +10,16 @@ use crate::{
     }, types::{RSymbolV2, RSymbolKind, NodeKind, NodeName, Scope},
 };
 
-pub fn parse_class(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2>>) -> Vec<Arc<RSymbolV2>> {
+pub fn parse_class<'a>(file: &Path, source: &[u8], node: Node, parent: Option<Arc<RSymbolV2<'a>>>) -> Vec<Arc<RSymbolV2<'a>>> {
     debug!("Parsing {:?} at {:?}", file, node.start_position());
 
     assert!(node.kind() == NodeKind::Class || node.kind() == NodeKind::Module);
 
     let name_node = node.child_by_field_name(NodeName::Name).unwrap();
     let scope = get_full_and_context_scope(&name_node, source);
-    let name = name_node.utf8_text(source).unwrap().to_string();
+    let name = scope.last().unwrap().to_string();
+    let scope = scope.without_last();
+
     let superclass_scope = node
         .child_by_field_name(NodeName::Superclass)
         .and_then(|n| n.child_by_field_name(NodeName::Name))

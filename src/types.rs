@@ -1,23 +1,24 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
-use tree_sitter::Point;
+use tree_sitter::{Point, Node};
 
 use strum::{AsRefStr, Display, EnumString, IntoStaticStr};
 
 use itertools::Itertools;
 
 #[allow(dead_code)]
-pub struct RSymbolV2 {
+pub struct RSymbolV2<'a> {
     pub kind: RSymbolKind,
     pub name: String,
     pub scope: Scope,
     pub file: PathBuf,
+    pub node: Weak<Node<'a>>,
     pub start: Point,
     pub end: Point,
-    pub parent: Option<Arc<RSymbolV2>>
+    pub parent: Option<Arc<RSymbolV2<'a>>>
 }
 
 #[allow(dead_code)]
@@ -141,11 +142,12 @@ impl std::fmt::Debug for RSymbolV2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{:?} in {:?} at {:?}, name = {}, parent = {:?}",
+            "{:?} in {:?} at {:?}, name = {}, scope = {}, parent = {:?}",
             self.kind,
             self.file,
             self.start,
             self.name,
+            self.scope,
             self.parent
         )
     }
@@ -324,6 +326,12 @@ impl Scope {
     pub fn remove_last(&mut self) {
         self.scopes.pop();
     }
+
+    pub fn without_last(&self) -> Scope {
+        let mut scopes = self.scopes.clone();
+        scopes.pop();
+        Scope::new(scopes)
+    }
 }
 
 impl From<String> for Scope {
@@ -378,6 +386,14 @@ impl PartialEq<&[&str]> for Scope {
         let s: Vec<&str> = self.scopes.iter().map(|s| s.as_str()).collect();
 
         s == *other
+    }
+}
+
+impl PartialEq<Scope> for &[&str] {
+    fn eq(&self, other: &Scope) -> bool {
+        let s: Vec<&str> = other.scopes.iter().map(|s| s.as_str()).collect();
+
+        *self == s
     }
 }
 

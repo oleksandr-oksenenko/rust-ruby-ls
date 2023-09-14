@@ -55,6 +55,12 @@ impl<'a> Server<'a> {
             ruby_filename_converter.clone(),
         );
 
+        let symbols = indexer.index_file(&PathBuf::from("/Users/oleksandr.oksenenko/thredup/thredup3/app/models/item/payout_window.rb")).unwrap();
+
+        for symbol in symbols {
+            info!("Parsed symbol: {symbol:?}");
+        }
+
         let symbols = Rc::new(indexer.index()?);
         let finder = Finder::new(&root_dir, symbols.clone(), ruby_filename_converter.clone());
 
